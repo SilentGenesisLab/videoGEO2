@@ -143,7 +143,11 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     else:  # pragma: no cover
         print(f"未知阶段: {args.stage}", file=sys.stderr)
         return 2
-    print(verdict.model_dump_json(indent=2))
+    output = verdict.model_dump_json(indent=2)
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        _write(args.out, output)
+    print(output)
     return 0 if verdict.passed else 1
 
 
@@ -187,6 +191,7 @@ def main() -> None:
     v.add_argument("stage", choices=["brief", "script", "assets", "final"])
     v.add_argument("artifact", help="待校验产物 json 路径")
     v.add_argument("--target", type=int, default=15, help="目标时长秒")
+    v.add_argument("--out", default="", help="把 GateVerdict 同步写入 gate-*.json")
     v.set_defaults(func=_cmd_validate)
 
     o = sub.add_parser("outline", help="打印执行清单")

@@ -41,7 +41,7 @@ AGENTS.md                     写死的 Codex Leader 编排流程
 .agents/skills/videogeo-run/  触发入口
 videogeo/
   schemas/                    产物契约（Requirement -> Brief -> Script -> Plan -> Assets -> Final + GateVerdict）
-  capabilities/               媒体能力（base 协议 + mock + ai_service 真实留接口）
+  capabilities/               媒体能力（base 协议 + mock + ai_service 真实 HTTP adapter）
   compile.py                  VideoScript -> plan.json
   executor.py                 跑 plan、原地回填状态、断点续
   gates/                      rules.py 规则预校验 + rubrics/ 给门禁 subagent 的评审标准
@@ -51,7 +51,9 @@ runs/<run_id>/                每次运行的产物（不提交）
 
 ## 接真实媒体
 
-设 `VIDEOGEO_USE_MOCKS=false`，在 `videogeo/capabilities/ai_service.py` 补齐各方法对
-chorify-ai-service 端点的映射（视频是异步 job，轮询封在该类内部）。编排流程不变。
+设 `VIDEOGEO_USE_MOCKS=false`，并把 `VIDEOGEO_AI_SERVICE_BASE_URL` 指向正在运行的
+chorify-ai-service。真实模式通过 `videogeo/capabilities/ai_service.py` 映射到
+`/v1/video/batch`、`/v1/video/job/{id}`、`/v1/tts/*`、`/v1/long-video/concat`
+等端点；视频异步 job 的轮询封在 adapter 内部。编排流程不变。
 
 真实服务器、OSS、飞书、GitHub 等密钥只放本地 `.env` 或服务器环境变量，禁止提交。

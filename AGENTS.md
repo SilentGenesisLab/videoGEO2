@@ -104,7 +104,8 @@ Leader 将用户需求写成 `runs/<id>/requirement.json`。
 2. 规则校验：
 
    ```powershell
-   python -m videogeo validate brief runs/<id>/brief.json --target <duration>
+   python -m videogeo validate brief runs/<id>/brief.json --target <duration> `
+     --out runs/<id>/gate-brief-rules-0.json
    ```
 
 3. 派 `gate-reviewer`，rubric 为 `videogeo/gates/rubrics/brief.md`，输出
@@ -114,7 +115,7 @@ Leader 将用户需求写成 `runs/<id>/requirement.json`。
 ### 2. 脚本编排 -> script
 
 1. 派 `script-orchestrator`：读 `brief.json` 和 `requirement.json`，写 `script.json`。
-2. 执行 `validate script`。
+2. 执行 `validate script --out runs/<id>/gate-script-rules-0.json`。
 3. 派 `gate-reviewer`，rubric 为 `videogeo/gates/rubrics/script.md`。
 4. 不过则带整改指令重跑。
 
@@ -138,13 +139,13 @@ python -m videogeo render runs/<id>/plan.json --assets runs/<id>/assets.json
 
 执行器运行 image/video/TTS/music 步骤，并原地更新 `plan.json`。重跑时会跳过已完成步骤。
 
-然后执行 `validate assets`，并派 `gate-reviewer` 使用
+然后执行 `validate assets --out runs/<id>/gate-assets-rules-0.json`，并派 `gate-reviewer` 使用
 `videogeo/gates/rubrics/assets.md` 审核。素材缺失或无效时重跑 `render`。
 
 ### 5. 剪辑 -> final
 
 1. 派 `editor`：读 `assets.json` 和 `script.json`，写 `final.json`。
-2. 执行 `validate final`。
+2. 执行 `validate final --out runs/<id>/gate-final-rules-0.json`。
 3. 派 `gate-reviewer`，rubric 为 `videogeo/gates/rubrics/final.md`。
 4. 不过则带整改指令重跑。
 

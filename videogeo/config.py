@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     ai_service_base_url: str = "http://localhost:8544"
     internal_api_key: str = ""
     """对应 ai-service 的 X-Internal-Key；空字符串时 ai-service dev 模式跳过鉴权。"""
+    ai_service_http_timeout_sec: float = 120.0
+    """普通 HTTP 请求超时。Seedance 生成本身走 job 轮询，不靠单请求长等。"""
+    ai_service_video_poll_interval_sec: float = 8.0
+    """轮询 /v1/video/job/{id} 的间隔。"""
+    ai_service_video_timeout_sec: float = 1800.0
+    """单个 Seedance job 最大等待时间。"""
 
     # ── 豆包 Volcano Ark（Agent/门禁推理）──
     volcano_api_url: str = "https://ark.cn-beijing.volces.com/api/v3"
