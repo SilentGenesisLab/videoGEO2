@@ -18,7 +18,7 @@ rules are in the repository root `AGENTS.md`.
    - `global_narrative`
    - storyboard `shots`
    - exactly two render `segments`
-   - TTS and BGM directions that compile into independent plan steps
+   - narration and BGM directions baked into Seedance prompts by default
 5. Show the user the compiled `plan.json` outline before long real rendering.
 6. Report final video URL, run directory, gate retries, and failed steps if any.
 
@@ -27,6 +27,7 @@ PowerShell defaults:
 ```powershell
 $env:PYTHONIOENCODING="utf-8"
 $env:VIDEOGEO_USE_MOCKS="true"
+$env:VIDEOGEO_AUDIO_MODE="seedance_native"
 ```
 
 For real media, set `VIDEOGEO_USE_MOCKS=false` and confirm `.env` is configured.

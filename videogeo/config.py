@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     render_concurrency: int = 4
     video_concurrency: int = 2
+    audio_mode: str = "seedance_native"
 
     ai_service_base_url: str = "http://localhost:8544"
     internal_api_key: str = ""

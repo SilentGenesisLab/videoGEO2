@@ -12,6 +12,10 @@ Important: assets.shots are rendered segment assets when script.segments exists.
 They are not storyboard micro-shots. Timeline shot_index values must reference
 the rendered segment indices in assets.json.
 
+Default audio mode is Seedance native. If assets.shots[*].native_audio is true,
+VO/BGM are already requested inside the generated clips. Do not require
+narration_audio_url or bgm_url in that mode.
+
 ## Timeline Rules
 
 - First entry start_sec must be 0.
@@ -23,9 +27,11 @@ the rendered segment indices in assets.json.
 
 ## Audio Rules
 
-- If narration audio exists, describe VO at 0dB and BGM bed around -18dB to -22dB.
-- Include ducking instructions when VO exists.
-- If BGM exists, mention its emotional arc and final lift.
+- If native_audio is true, state that VO/BGM are native Seedance audio embedded
+  in the clips and should be preserved during concat.
+- If external narration audio exists, describe VO at 0dB and BGM bed around
+  -18dB to -22dB.
+- Include ducking instructions only for external audio mode.
 - has_subtitles should usually be true for product ads with narration or screen text.
 
 ## Output Shape
@@ -39,7 +45,7 @@ the rendered segment indices in assets.json.
     {"shot_index": 1, "start_sec": 10.0, "end_sec": 25.0, "transition_in": "dissolve"}
   ],
   "has_subtitles": true,
-  "audio_mix": "VO 0dB, BGM -20dB bed, duck BGM by 6dB under VO, final 2s lift."
+  "audio_mix": "Native Seedance VO/BGM are embedded in segment clips; preserve clip audio during concat."
 }
 
 Self-check:

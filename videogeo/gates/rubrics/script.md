@@ -17,6 +17,9 @@ Judge `script.json` as a TVC production contract. Any blocker means
   prompts, but `feed_storyboard_seed` should remain false unless justified.
 - **Narration/visual sync** (major): narration must match the segment visuals
   and fit the segment duration.
+- **Native Seedance audio** (major): unless the run explicitly uses external
+  audio mode, segment narration and BGM direction must be suitable for prompt
+  embedding as `voiceover: "..."` and `background music / sound design: ...`.
 - **TVC rhythm** (major): the whole film should use a two-part rhythm:
   hook/build -> proof/landing, with product/person/detail alternation where
   appropriate.

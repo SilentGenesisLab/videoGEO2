@@ -1,8 +1,9 @@
 """Plan executor.
 
 The executor is deterministic: it walks ready plan steps, calls capabilities,
-and writes status back into plan.json. Render steps are concurrent by default so
-TTS/BGM can start while video jobs are running.
+and writes status back into plan.json. Render steps are concurrent by default.
+In the default seedance_native audio mode, VO/BGM are already embedded in video
+prompts, so no separate TTS/BGM steps are needed.
 """
 from __future__ import annotations
 
@@ -51,7 +52,13 @@ async def _run_step(step: PlanStep, plan: Plan, cap: CapabilityClient) -> None:
                 duration_sec=float(step.inputs.get("duration_sec", 5)),
                 aspect_ratio=step.inputs.get("aspect_ratio", "9:16"),
             )
-            step.output = {"clip_url": url, "duration_sec": float(step.inputs.get("duration_sec", 5))}
+            step.output = {
+                "clip_url": url,
+                "duration_sec": float(step.inputs.get("duration_sec", 5)),
+                "native_audio": bool(step.inputs.get("native_audio", False)),
+                "narration": step.inputs.get("narration", ""),
+                "bgm_direction": step.inputs.get("bgm_direction", ""),
+            }
 
         elif step.type == "tts":
             url = await cap.synthesize_speech(
@@ -177,6 +184,9 @@ def plan_to_assets(plan: Plan) -> RenderedAssets:
         elif step.type == "video":
             cur.clip_url = step.output.get("clip_url", "")
             cur.duration_sec = float(step.output.get("duration_sec", cur.duration_sec))
+            cur.native_audio = bool(step.output.get("native_audio", False))
+            cur.narration_text = str(step.output.get("narration", ""))
+            cur.bgm_direction = str(step.output.get("bgm_direction", ""))
         elif step.type == "tts":
             cur.narration_audio_url = step.output.get("audio_url", "")
     bgm = next((s.output["audio_url"] for s in plan.steps if s.type == "music" and s.output), "")

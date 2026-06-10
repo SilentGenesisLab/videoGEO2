@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from videogeo.config import get_settings
 from videogeo.schemas.plan import Plan, PlanStep
 from videogeo.schemas.script import RenderSegment, Shot, VideoScript
 
@@ -89,6 +90,7 @@ def compile_plan(
     image_mode: str = "ref",
 ) -> Plan:
     """Compile the creative script into deterministic media tasks."""
+    audio_mode = get_settings().audio_mode.strip().lower()
     refs = ref_image_urls or []
     steps: list[PlanStep] = []
     clip_ids: list[str] = []
@@ -118,6 +120,12 @@ def compile_plan(
         )
 
         vid_id = f"{prefix}{i}.vid"
+        native_prompt = _with_native_audio_prompt(
+            unit.video_prompt,
+            narration=unit.narration,
+            bgm_direction=script.bgm_direction,
+            audio_mode=audio_mode,
+        )
         steps.append(
             PlanStep(
                 id=vid_id,
@@ -125,7 +133,12 @@ def compile_plan(
                 type="video",
                 shot_index=i,
                 inputs={
-                    "video_prompt": unit.video_prompt,
+                    "video_prompt": native_prompt,
+                    "visual_prompt": unit.video_prompt,
+                    "narration": unit.narration,
+                    "bgm_direction": script.bgm_direction,
+                    "audio_mode": audio_mode,
+                    "native_audio": audio_mode == "seedance_native",
                     "duration_sec": unit.duration_sec,
                     "aspect_ratio": script.aspect_ratio,
                     "storyboard_prompt": unit.storyboard_prompt,
@@ -139,7 +152,7 @@ def compile_plan(
         )
         clip_ids.append(vid_id)
 
-        if unit.narration.strip():
+        if audio_mode == "external" and unit.narration.strip():
             steps.append(
                 PlanStep(
                     id=f"{prefix}{i}.tts",
@@ -150,7 +163,7 @@ def compile_plan(
                 )
             )
 
-    if script.bgm_direction.strip():
+    if audio_mode == "external" and script.bgm_direction.strip():
         steps.append(
             PlanStep(
                 id="bgm",
@@ -180,3 +193,21 @@ def compile_plan(
         target_duration_sec=target_duration_sec,
         steps=steps,
     )
+
+
+def _with_native_audio_prompt(prompt: str, *, narration: str, bgm_direction: str, audio_mode: str) -> str:
+    """Bake VO/BGM instructions into the Seedance prompt by default.
+
+    The 0609-r1 reference project used `voiceover: "..."` inside the prompt fed
+    to Seedance, rather than separate TTS/music steps before render.
+    """
+    if audio_mode != "seedance_native":
+        return prompt
+    additions: list[str] = []
+    if narration.strip() and "voiceover:" not in prompt.lower():
+        additions.append(f'voiceover: "{narration.strip()}"')
+    if bgm_direction.strip() and "background music" not in prompt.lower() and "bgm" not in prompt.lower():
+        additions.append(f"background music / sound design: {bgm_direction.strip()}")
+    if not additions:
+        return prompt
+    return prompt.rstrip() + "\n" + "\n".join(additions)

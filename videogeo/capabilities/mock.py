@@ -1,8 +1,4 @@
-"""MockCapabilities — 媒体能力替身，返回确定性占位 url。
-
-不触网、不依赖密钥，让薄执行器（executor.py）端到端跑通假数据。
-url 用内容 hash 生成，保证可读且稳定，便于测试断言。
-"""
+"""Deterministic mock media capabilities."""
 from __future__ import annotations
 
 import hashlib
@@ -11,20 +7,17 @@ _BASE = "https://mock.videogeo.local"
 
 
 def _tag(*parts: str) -> str:
-    h = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
-    return h
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
 
 
 class MockCapabilities:
-    """所有媒体能力都返回占位 url，不做任何真实生成。"""
-
     async def generate_image(self, *, prompt: str, aspect_ratio: str) -> str:
         return f"{_BASE}/img/{_tag(prompt, aspect_ratio)}.png"
 
     async def generate_video(
         self, *, prompt: str, image_url: str, duration_sec: float, aspect_ratio: str
     ) -> str:
-        return f"{_BASE}/clip/{_tag(prompt, image_url, str(duration_sec))}.mp4"
+        return f"{_BASE}/clip/{_tag(prompt, image_url, str(duration_sec), aspect_ratio)}.mp4"
 
     async def synthesize_speech(self, *, text: str, language: str) -> str:
         if not text:

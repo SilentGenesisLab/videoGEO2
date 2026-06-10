@@ -4,8 +4,8 @@ Codex-native multi-agent video generation framework.
 
 Codex is the brain. Python is the thin executor. The pipeline turns a user
 video request into structured artifacts, gates every semantic stage, compiles a
-deterministic `plan.json`, renders media concurrently, and assembles the final
-video.
+deterministic `plan.json`, renders Seedance segments concurrently, and assembles
+the final video.
 
 ## Current TVC Kernel
 
@@ -17,8 +17,11 @@ requirement -> brief -> global script -> storyboard shots -> render segments
 ```
 
 For a 25s TVC, `script.json` should contain storyboard micro-shots but only two
-actual render segments. TTS and BGM are independent plan steps and can run while
-video jobs are rendering.
+actual render segments. TTS and BGM are not independent plan steps by default:
+they are baked into each Seedance prompt as native `voiceover:` and
+`background music / sound design:` instructions.
+Set `VIDEOGEO_AUDIO_MODE=external` only when separate TTS/BGM post-production is
+desired.
 
 ## Usage
 
@@ -30,6 +33,7 @@ Executor commands can also be run directly:
 ```bash
 export VIDEOGEO_USE_MOCKS=true
 export PYTHONIOENCODING=utf-8
+export VIDEOGEO_AUDIO_MODE=seedance_native
 
 python -m videogeo validate script runs/<id>/script.json --target 25
 python -m videogeo compile runs/<id>/script.json --run <id> --ref "<image-url>" --target 25 --out runs/<id>/plan.json
@@ -42,6 +46,7 @@ PowerShell:
 ```powershell
 $env:VIDEOGEO_USE_MOCKS="true"
 $env:PYTHONIOENCODING="utf-8"
+$env:VIDEOGEO_AUDIO_MODE="seedance_native"
 ```
 
 ## Repository Layout

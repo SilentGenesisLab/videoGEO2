@@ -18,7 +18,7 @@ Leader requirement.json
        two render segments for 25s TVC
   -> gate
   -> compile plan.json
-  -> concurrent render assets.json
+  -> concurrent Seedance render assets.json
   -> gate
   -> editor final.json
   -> gate
@@ -61,6 +61,24 @@ segments as one continuous global story, not two separate ads.
 Storyboards are references. Do not feed a storyboard grid as the Seedance seed
 unless a later provider-specific decision explicitly sets `feed_storyboard_seed=true`.
 The default is product/reference image as seed and Chinese video prompts for stability.
+
+## Audio Policy
+
+Default audio mode is `VIDEOGEO_AUDIO_MODE=seedance_native`.
+
+In this mode, TTS/BGM are not separate pre-render steps. The segment narration
+and music direction are baked into each Seedance prompt, matching the 0609-r1
+reference format:
+
+```text
+voiceover: "..."
+background music / sound design: ...
+```
+
+Therefore a normal 25s TVC plan should show two video steps (`seg0.vid`,
+`seg1.vid`) and no `tts` or `music` steps. Use `VIDEOGEO_AUDIO_MODE=external`
+only for the older fallback path where separate TTS/BGM assets are generated and
+mixed after video render.
 
 ## Run Directory
 
@@ -147,11 +165,13 @@ Compile uses `segments` first. If `segments` exist, video steps are `seg0.vid`,
 python -m videogeo render runs/<id>/plan.json --assets runs/<id>/assets.json
 ```
 
-Render runs ready steps concurrently. BGM and TTS are not blocked behind video
-unless dependencies require it. Tuning:
+Render runs ready steps concurrently. In default `seedance_native` audio mode,
+VO/BGM are already inside the video prompts, so there are no separate TTS/BGM
+steps to wait for. Tuning:
 
 - `VIDEOGEO_RENDER_CONCURRENCY=4`
 - `VIDEOGEO_VIDEO_CONCURRENCY=2`
+- `VIDEOGEO_AUDIO_MODE=seedance_native`
 
 Then validate and gate `assets.json`.
 

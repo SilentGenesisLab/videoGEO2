@@ -36,6 +36,15 @@ script.json must contain:
 4. bgm_direction
    A concrete music generation instruction.
 
+Default audio mode is Seedance native. That means narration and music direction
+will be embedded into each segment's video prompt by compile as:
+
+voiceover: "..."
+background music / sound design: ...
+
+Do not ask for separate TTS/BGM generation unless the Leader explicitly switches
+to VIDEOGEO_AUDIO_MODE=external.
+
 ## 25s Product/TVC Rule
 
 For a 25s TVC, create exactly two render segments. Prefer:
@@ -67,6 +76,8 @@ deliberate transition overlap.
   lighting, material, lens, motion, and composition.
 - Voiceover must match the visual moment and be short enough for the segment.
 - On-screen text must be short and usable.
+- BGM direction must be written so it can be understood inside a Seedance prompt:
+  rhythm, mood, tempo, instrumentation, and final lift.
 
 ## Output Shape
 
