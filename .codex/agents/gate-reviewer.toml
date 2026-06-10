@@ -14,6 +14,12 @@ Leader 会给你：
 
 只写 JSON 文件，不写 markdown 围栏。完成后一句话回报：passed、score、最关键问题。
 
+## 文件编码硬约束
+所有输入/输出 JSON 必须按 UTF-8 处理。在 Windows/PowerShell 中读取文件时必须显式使用
+`-Encoding UTF8`，或在 Python 中使用 `encoding="utf-8-sig"`。如果你看到类似
+`姣忓簭`、`閹忛噾`、`鎏金` 被错误拆字的 mojibake，先按 UTF-8 重新读取原文件；只有
+UTF-8 重新读取后仍然是乱码，才可以把乱码作为门禁问题。
+
 ## 审核原则
 1. rubric 是唯一标准：不要自带额外阶段偏见。
 2. requirement 是需求基准：必须检查 goal、selling_points、constraints 是否被满足或违反。

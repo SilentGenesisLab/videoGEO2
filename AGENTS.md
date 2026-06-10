@@ -36,6 +36,9 @@ Agent 约定：
 
 - Agent 只读写 Leader 明确指定的路径。
 - Agent 输出必须是符合 schema 的纯 JSON。
+- 所有 Agent 读写 JSON 必须显式使用 UTF-8。Windows/PowerShell 下读取中文文件时必须使用
+  `-Encoding UTF8` 或 Python `encoding="utf-8-sig"`；若看到 `姣忓簭`、`鎏金` 等
+  UTF-8 被 GBK 误解的 mojibake，不得直接判失败，必须先用 UTF-8 重新读取。
 - 门禁不过时，Leader 将 `fix_instructions` 原样回灌给上游 Agent，并要求重写完整产物。
 - 修改 schema 时，必须同步更新 `.codex/agents/*.toml`、validator 与 rubrics。
 

@@ -51,9 +51,9 @@ runs/<run_id>/                每次运行的产物（不提交）
 
 ## 接真实媒体
 
-设 `VIDEOGEO_USE_MOCKS=false`，并把 `VIDEOGEO_AI_SERVICE_BASE_URL` 指向正在运行的
-chorify-ai-service。真实模式通过 `videogeo/capabilities/ai_service.py` 映射到
-`/v1/video/batch`、`/v1/video/job/{id}`、`/v1/tts/*`、`/v1/long-video/concat`
-等端点；视频异步 job 的轮询封在 adapter 内部。编排流程不变。
+设 `VIDEOGEO_USE_MOCKS=false`。真实 video step 优先通过 `VIDEOGEO_AI_SERVICE_REPO`
+直连 chorify-ai-service 的 `seedance_service.run_full`，避免 Windows 本地 DB 型 HTTP
+路由的 event loop 问题；TTS、音乐、concat 仍通过 `VIDEOGEO_AI_SERVICE_BASE_URL`
+调用 `/v1/tts/*`、`/v1/long-video/concat`。编排流程不变，入口仍是 `plan.json`。
 
 真实服务器、OSS、飞书、GitHub 等密钥只放本地 `.env` 或服务器环境变量，禁止提交。

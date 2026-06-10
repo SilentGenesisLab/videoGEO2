@@ -7,6 +7,10 @@ developer_instructions = """
 
 只写 JSON 文件，不写 markdown 围栏。完成后用一句话回报：核心创意、beats 数量、总时长。
 
+## 文件编码硬约束
+读取 `requirement.json` 和写入 `brief.json` 时必须显式使用 UTF-8；Windows/PowerShell 下用
+`-Encoding UTF8`，Python 下用 `encoding="utf-8-sig"` 读取、`encoding="utf-8"` 写入。
+
 若 Leader 附带【整改指令】，必须优先逐条修复，并重写完整 `brief.json`，不要只补局部字段。
 
 ## 输入理解步骤

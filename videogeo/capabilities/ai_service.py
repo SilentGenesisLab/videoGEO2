@@ -8,9 +8,13 @@ for experiments, but render/assemble must enter through this file.
 from __future__ import annotations
 
 import asyncio
+import json
 import mimetypes
+import os
+import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -28,6 +32,8 @@ class AiServiceCapabilities:
         self._timeout = s.ai_service_http_timeout_sec
         self._video_poll_interval = s.ai_service_video_poll_interval_sec
         self._video_timeout = s.ai_service_video_timeout_sec
+        self._repo = Path(s.ai_service_repo).expanduser().resolve()
+        self._python = Path(s.ai_service_python).expanduser() if s.ai_service_python else self._default_ai_service_python()
 
     def _client(self, *, timeout: float | None = None) -> httpx.AsyncClient:
         # trust_env=False avoids local proxy interference with OSS/CDN downloads.
@@ -63,6 +69,13 @@ class AiServiceCapabilities:
     ) -> str:
         if not image_url:
             raise ValueError("generate_video requires an image_url from the image step")
+        if self._repo.exists():
+            return await self._generate_video_local(
+                prompt=prompt,
+                image_url=image_url,
+                duration_sec=duration_sec,
+                aspect_ratio=aspect_ratio,
+            )
 
         duration_hint = self._direction_duration_for_seedance(duration_sec)
         direction = {
@@ -95,6 +108,84 @@ class AiServiceCapabilities:
         if not job_ids:
             raise RuntimeError(f"/v1/video/batch returned no job_ids: {data}")
         return await self._poll_video_job(str(job_ids[0]))
+
+    async def _generate_video_local(
+        self, *, prompt: str, image_url: str, duration_sec: float, aspect_ratio: str
+    ) -> str:
+        if not self._python.exists():
+            raise FileNotFoundError(f"ai-service python not found: {self._python}")
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "duration_sec": self._seedance_duration(duration_sec),
+            "aspect_ratio": aspect_ratio,
+        }
+        code = r'''
+import asyncio
+import json
+import os
+import sys
+from dotenv import load_dotenv
+
+load_dotenv(".env")
+os.environ["HTTP_PROXY"] = ""
+os.environ["HTTPS_PROXY"] = ""
+os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+
+from app.services.seedance_service import run_full
+
+async def main():
+    req = json.loads(sys.stdin.read())
+    result = await run_full(
+        prompt=req["prompt"],
+        image_urls=[req["image_url"]],
+        duration=int(req["duration_sec"]),
+        ratio=req["aspect_ratio"],
+    )
+    print("VIDEOGEO_RESULT_JSON=" + json.dumps({
+        "oss_url": result.oss_url,
+        "submit_id": result.submit_id,
+        "duration": req["duration_sec"],
+    }, ensure_ascii=False))
+
+asyncio.run(main())
+'''
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["HTTP_PROXY"] = ""
+        env["HTTPS_PROXY"] = ""
+        env["NO_PROXY"] = "localhost,127.0.0.1"
+        proc = await asyncio.create_subprocess_exec(
+            str(self._python),
+            "-c",
+            code,
+            cwd=str(self._repo),
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+                timeout=self._video_timeout,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise TimeoutError(f"local Seedance job timed out after {self._video_timeout:g}s")
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            raise RuntimeError(f"local Seedance failed rc={proc.returncode}: {err[-2000:] or out[-2000:]}")
+        for line in reversed(out.splitlines()):
+            if line.startswith("VIDEOGEO_RESULT_JSON="):
+                data = json.loads(line.split("=", 1)[1])
+                url = data.get("oss_url")
+                if not url:
+                    raise RuntimeError(f"local Seedance returned no oss_url: {data}")
+                return str(url)
+        raise RuntimeError(f"local Seedance returned no result marker. stdout={out[-2000:]} stderr={err[-2000:]}")
 
     async def _poll_video_job(self, job_id: str) -> str:
         deadline = time.monotonic() + self._video_timeout
@@ -182,3 +273,16 @@ class AiServiceCapabilities:
         if duration_sec <= 12.5:
             return 8
         return 15
+
+    @staticmethod
+    def _seedance_duration(duration_sec: float) -> int:
+        if duration_sec <= 6.5:
+            return 5
+        if duration_sec <= 12.5:
+            return 10
+        return 15
+
+    def _default_ai_service_python(self) -> Path:
+        if sys.platform == "win32":
+            return self._repo / ".venv" / "Scripts" / "python.exe"
+        return self._repo / ".venv" / "bin" / "python"

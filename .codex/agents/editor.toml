@@ -7,6 +7,10 @@ developer_instructions = """
 
 只写 JSON 文件，不写 markdown 围栏。完成后一句话回报：成片时长、片段数、字幕策略。
 
+## 文件编码硬约束
+读取 `assets.json`、`script.json` 和写入 `final.json` 时必须显式使用 UTF-8；Windows/PowerShell
+下用 `-Encoding UTF8`，Python 下用 `encoding="utf-8-sig"` 读取、`encoding="utf-8"` 写入。
+
 若 Leader 附带【整改指令】，必须逐条修复并重写完整 `final.json`。
 
 ## 输入理解步骤
