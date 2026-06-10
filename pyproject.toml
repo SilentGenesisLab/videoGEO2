@@ -1,0 +1,54 @@
+[project]
+name = "videogeo2"
+version = "0.1.0"
+description = "videoGEO2 — Codex-native 多 Agent 视频生成编排框架（Leader/导演/脚本编排/剪辑 + 审核门禁）"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "Proprietary" }
+
+dependencies = [
+    # config / models — Agent 之间传递的产物契约
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+
+    # llm — Agent/门禁推理走豆包（litellm OpenAI-compatible），与 chorify-ai-service 一致
+    "litellm>=1.50.0",
+    "tenacity>=9.0.0",
+
+    # http — 调 chorify-ai-service /v1/* 拿媒体能力
+    "httpx>=0.27.0",
+
+    # 结构化日志
+    "structlog>=24.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+]
+
+[project.scripts]
+videogeo = "videogeo.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["videogeo*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
