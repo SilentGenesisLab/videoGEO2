@@ -1,21 +1,83 @@
-"""compile —— 把脚本编排产物 VideoScript 编译成「可执行 + 可显示」的 Plan。
+"""Compile VideoScript into an executable Plan.
 
-这是 Codex 大脑（脚本编排 subagent 产出 script.json）与薄执行器之间的桥：
-确定性地把每个分镜展开成 image→video(+tts) 步骤，再加全局 bgm 与 concat 终点，
-连好依赖。不含任何创意决策，纯机械展开，便于审计与断点续跑。
+New videoGEO2 scripts are global-first: storyboard shots describe rhythm and
+composition, while render segments describe the actual I2V jobs. Compile uses
+segments when present and falls back to legacy shots only for compatibility.
 """
 from __future__ import annotations
 
-from videogeo.schemas.plan import Plan, PlanStep
-from videogeo.schemas.script import VideoScript
+from dataclasses import dataclass
 
-# Seedance 接受的视频时长档位（见 chorify-ai-service video.py：5/8→10/其余→15）
+from videogeo.schemas.plan import Plan, PlanStep
+from videogeo.schemas.script import RenderSegment, Shot, VideoScript
+
 _VIDEO_DURATIONS = (5, 10, 15)
 
 
 def quantize_duration(seconds: float) -> int:
-    """把任意秒数吸附到最近的 Seedance 档位 5/10/15。"""
+    """Map legacy shot durations to Seedance-friendly buckets."""
     return min(_VIDEO_DURATIONS, key=lambda d: abs(d - seconds))
+
+
+@dataclass(frozen=True)
+class _Unit:
+    index: int
+    name: str
+    beat: str
+    duration_sec: float
+    image_prompt: str
+    video_prompt: str
+    narration: str
+    on_screen_text: str
+    transition: str
+    storyboard_prompt: str = ""
+    shot_indices: tuple[int, ...] = ()
+    feed_storyboard_seed: bool = False
+    is_segment: bool = False
+
+
+def _units_from_script(script: VideoScript) -> list[_Unit]:
+    shot_by_index = {s.index: s for s in script.shots}
+    if script.segments:
+        return [_unit_from_segment(seg, shot_by_index) for seg in sorted(script.segments, key=lambda s: s.index)]
+    return [_unit_from_shot(shot) for shot in sorted(script.shots, key=lambda s: s.index)]
+
+
+def _unit_from_segment(seg: RenderSegment, shot_by_index: dict[int, Shot]) -> _Unit:
+    refs = [shot_by_index[i] for i in seg.shot_indices if i in shot_by_index]
+    image_prompt = refs[0].image_prompt if refs else seg.storyboard_prompt
+    storyboard_prompt = seg.storyboard_prompt or " | ".join(s.video_prompt for s in refs)
+    return _Unit(
+        index=seg.index,
+        name=seg.name or f"segment {seg.index}",
+        beat=seg.beat,
+        duration_sec=seg.duration_sec,
+        image_prompt=image_prompt,
+        video_prompt=seg.video_prompt,
+        narration=seg.narration,
+        on_screen_text=seg.on_screen_text,
+        transition=seg.transition,
+        storyboard_prompt=storyboard_prompt,
+        shot_indices=tuple(seg.shot_indices),
+        feed_storyboard_seed=seg.feed_storyboard_seed,
+        is_segment=True,
+    )
+
+
+def _unit_from_shot(shot: Shot) -> _Unit:
+    return _Unit(
+        index=shot.index,
+        name=f"shot {shot.index}",
+        beat=shot.beat,
+        duration_sec=quantize_duration(shot.duration_sec),
+        image_prompt=shot.image_prompt,
+        video_prompt=shot.video_prompt,
+        narration=shot.narration,
+        on_screen_text=shot.on_screen_text,
+        transition=shot.transition,
+        shot_indices=(shot.index,),
+        is_segment=False,
+    )
 
 
 def compile_plan(
@@ -26,63 +88,65 @@ def compile_plan(
     target_duration_sec: int = 15,
     image_mode: str = "ref",
 ) -> Plan:
-    """VideoScript → Plan。
-
-    image_mode="ref"（v1 默认）：首帧用参考图，不做文生图——因 ai-service 暂无独立
-    文生图端点。每个分镜按序拿一张 ref（轮转），没有 ref 时执行器回退占位。
-    image_mode="gen"：调 generate_image 真正出图（待 ai-service 补端点后启用）。
-    """
+    """Compile the creative script into deterministic media tasks."""
     refs = ref_image_urls or []
     steps: list[PlanStep] = []
     clip_ids: list[str] = []
 
-    for shot in sorted(script.shots, key=lambda s: s.index):
-        i = shot.index
-        beat = shot.beat or "镜头"
+    for unit in _units_from_script(script):
+        prefix = "seg" if unit.is_segment else "s"
+        i = unit.index
+        beat = unit.beat or unit.name
 
-        img_id = f"s{i}.img"
+        img_id = f"{prefix}{i}.img"
         ref_url = refs[i % len(refs)] if refs else ""
         steps.append(
             PlanStep(
                 id=img_id,
-                title=f"分镜{i} · 首帧图（{beat}）",
+                title=f"{unit.name} first frame ({beat})",
                 type="image",
                 shot_index=i,
                 inputs={
                     "mode": image_mode,
-                    "image_prompt": shot.image_prompt,
+                    "image_prompt": unit.image_prompt,
                     "ref_url": ref_url,
                     "aspect_ratio": script.aspect_ratio,
+                    "storyboard_prompt": unit.storyboard_prompt,
+                    "covered_shots": list(unit.shot_indices),
                 },
             )
         )
 
-        vid_id = f"s{i}.vid"
-        dur = quantize_duration(shot.duration_sec)
+        vid_id = f"{prefix}{i}.vid"
         steps.append(
             PlanStep(
                 id=vid_id,
-                title=f"分镜{i} · 图生视频 {dur}s",
+                title=f"{unit.name} I2V {unit.duration_sec:g}s",
                 type="video",
                 shot_index=i,
                 inputs={
-                    "video_prompt": shot.video_prompt,
-                    "duration_sec": dur,
+                    "video_prompt": unit.video_prompt,
+                    "duration_sec": unit.duration_sec,
                     "aspect_ratio": script.aspect_ratio,
+                    "storyboard_prompt": unit.storyboard_prompt,
+                    "covered_shots": list(unit.shot_indices),
+                    "feed_storyboard_seed": unit.feed_storyboard_seed,
+                    "transition": unit.transition,
+                    "on_screen_text": unit.on_screen_text,
                 },
                 depends_on=[img_id],
             )
         )
         clip_ids.append(vid_id)
 
-        if shot.narration.strip():
+        if unit.narration.strip():
             steps.append(
                 PlanStep(
-                    id=f"s{i}.tts",
-                    title=f"分镜{i} · 旁白配音",
+                    id=f"{prefix}{i}.tts",
+                    title=f"{unit.name} voiceover",
                     type="tts",
                     shot_index=i,
-                    inputs={"text": shot.narration, "language": "zh"},
+                    inputs={"text": unit.narration, "language": "zh"},
                 )
             )
 
@@ -90,7 +154,7 @@ def compile_plan(
         steps.append(
             PlanStep(
                 id="bgm",
-                title="全片 · 背景音乐",
+                title="full-film BGM",
                 type="music",
                 inputs={
                     "prompt": script.bgm_direction,
@@ -99,11 +163,10 @@ def compile_plan(
             )
         )
 
-    # concat 终点：依赖所有视频片段；时间线顺序/转场由剪辑 subagent 填进 inputs.timeline
     steps.append(
         PlanStep(
             id="final",
-            title="剪辑 · 按时间线拼接成片",
+            title="assemble final timeline",
             type="concat",
             inputs={"timeline": [], "audio_mix": "", "has_subtitles": False},
             depends_on=clip_ids,

@@ -1,179 +1,181 @@
-# videoGEO2 - 多 Agent 视频生成编排框架
+# videoGEO2 - Codex-native video generation framework
 
-这是 videoGEO2 仓库的 Codex 入口文档。它定义 Leader 编排流程、当前可用 Agent、
-Skill 触发方式，以及 Codex 架构维护约定。
+This file is the Codex Leader playbook. Codex does the creative orchestration;
+Python stays a thin deterministic executor.
 
-## 当前结构
+## Core Rule
 
-| 区域 | 路径 | 用途 |
-|---|---|---|
-| Codex 入口文档 | `AGENTS.md` | Codex 编排流程的主说明。 |
-| Codex Agents | `.codex/agents/*.toml` | Codex 可调用的 Agent 定义。 |
-| Codex Skill | `.agents/skills/videogeo-run/SKILL.md` | Codex 侧视频生成流水线触发入口。 |
-| 门禁 Rubric | `videogeo/gates/rubrics/*.md` | 各阶段语义质量审核标准。 |
-| 契约 Schema | `videogeo/schemas/` | Agent 产物与 Python 执行器之间的硬契约。 |
+For product/TVC jobs, do not let one agent improvise the whole video directly.
+The required chain is:
 
-## 架构：Codex 当大脑，Python 当薄执行器
+```text
+Leader requirement.json
+  -> director brief.json
+  -> gate
+  -> script-orchestrator script.json
+       global_narrative
+       storyboard shots
+       two render segments for 25s TVC
+  -> gate
+  -> compile plan.json
+  -> concurrent render assets.json
+  -> gate
+  -> editor final.json
+  -> gate
+  -> assemble final video
+```
 
-- **大脑 / 控制平面 = Codex Leader**。本文件就是编排剧本；创意与审核角色在
-  `.codex/agents/` 下。
-- **薄执行器 = `videogeo` Python 包**。它只做确定性工作：编译创意 JSON 为
-  `plan.json`、渲染素材、校验契约、合成成片。
-- **媒体重活**，包括图像生成、视频生成、TTS、音乐、ffmpeg 合成，全部委托
-  chorify-ai-service `/v1/*`。
-- v1 默认 `VIDEOGEO_USE_MOCKS=true`，无需密钥/网络也可以端到端跑通。
+## Architecture
+
+- Control plane: Codex Leader and `.codex/agents/*.toml`.
+- Skill entry: `.agents/skills/videogeo-run/SKILL.md`.
+- Contracts: `videogeo/schemas/`.
+- Deterministic executor: `python -m videogeo compile|render|assemble|validate|outline`.
+- Media provider: chorify-ai-service via `VIDEOGEO_USE_MOCKS=false`.
 
 ## Agents
 
-| Agent | 输入 -> 输出 | 职责 |
+| Agent | Input -> Output | Responsibility |
 |---|---|---|
-| `director` | `requirement.json` -> `brief.json` | 创意概念、叙事 beats、氛围、视觉方向。 |
-| `script-orchestrator` | `brief.json` + `requirement.json` -> `script.json` | 可执行分镜序列，包含图像/视频 prompt、旁白、屏幕文字、转场。 |
-| `editor` | `assets.json` + `script.json` -> `final.json` | 成片时间线与混音方案；不编造 `video_url`。 |
-| `gate-reviewer` | stage + artifact + rubric -> `gate-*.json` | 唯一通用语义门禁，只按传入 rubric 审核。 |
+| `director` | `requirement.json` -> `brief.json` | Concept, narrative beats, mood, visual quality, product constraints. |
+| `script-orchestrator` | `requirement.json` + `brief.json` -> `script.json` | Whole-film global script, storyboard micro-shots, render segments, prompts, VO, text. |
+| `editor` | `assets.json` + `script.json` -> `final.json` | Timeline, segment order, transitions, subtitle policy, audio mix plan. |
+| `gate-reviewer` | stage + artifact + rubric -> `gate-*.json` | Only semantic gate; judge by the supplied rubric. |
 
-Agent 约定：
+All agents must read/write JSON with UTF-8. If Chinese text appears as mojibake,
+re-read as UTF-8 before judging content.
 
-- Agent 只读写 Leader 明确指定的路径。
-- Agent 输出必须是符合 schema 的纯 JSON。
-- 所有 Agent 读写 JSON 必须显式使用 UTF-8。Windows/PowerShell 下读取中文文件时必须使用
-  `-Encoding UTF8` 或 Python `encoding="utf-8-sig"`；若看到 `姣忓簭`、`鎏金` 等
-  UTF-8 被 GBK 误解的 mojibake，不得直接判失败，必须先用 UTF-8 重新读取。
-- 门禁不过时，Leader 将 `fix_instructions` 原样回灌给上游 Agent，并要求重写完整产物。
-- 修改 schema 时，必须同步更新 `.codex/agents/*.toml`、validator 与 rubrics。
+## script.json Contract
 
-## Skill
+`script.json` is no longer just a list of executable shots. It has three layers:
 
-`videogeo-run` 是端到端视频生成触发 Skill。当用户要求生成视频、短视频、广告片、产品片，
-或明确说“跑 videoGEO / 走视频生成流程”时使用。
+1. `global_narrative`: the whole-film story spine, funnel, voiceover spine, and visual spine.
+2. `shots`: storyboard micro-shots, usually 8-11 for a 25s luxury/product TVC. These are references for rhythm and prompt detail.
+3. `segments`: actual render units. For a 25s TVC, use exactly two segments. Each segment covers multiple storyboard shots and must be `<=15s`.
 
-Codex 侧 Skill 路径：
+For a 25s TVC, prefer a practical split of `10s + 15s` when the downstream
+video provider only exposes 5/10/15 buckets. If the provider accepts arbitrary
+durations up to 15s, `12s + 13s` is acceptable. In both cases, keep the two
+segments as one continuous global story, not two separate ads.
 
-```text
-.agents/skills/videogeo-run/SKILL.md
-```
+Storyboards are references. Do not feed a storyboard grid as the Seedance seed
+unless a later provider-specific decision explicitly sets `feed_storyboard_seed=true`.
+The default is product/reference image as seed and Chinese video prompts for stability.
 
-Skill 保持轻量：负责启动与收尾，具体编排流程以本 `AGENTS.md` 为准。
+## Run Directory
 
-## 产物落盘
-
-每次运行写入 `runs/<run_id>/`。
+Each run writes to `runs/<run_id>/`:
 
 ```text
-runs/<run_id>/
-  requirement.json       Leader 归一化后的 Requirement
-  brief.json             director 产出的 CreativeBrief
-  script.json            script-orchestrator 产出的 VideoScript
-  plan.json              可执行/可展示 Plan，由执行器原地回填状态
-  assets.json            render 阶段产出的 RenderedAssets
-  final.json             FinalVideo 时间线与最终 video_url
-  gate-<stage>-<n>.json  各门禁尝试的 GateVerdict
+requirement.json
+brief.json
+script.json
+plan.json
+assets.json
+final.json
+gate-<stage>-<n>.json
 ```
 
-`run_id` 格式：`YYYYMMDD-HHMMSS-<短随机>`。
+`run_id` format: `YYYYMMDD-HHMMSS-<short-random>`.
 
-## 固定编排流程
+## Fixed Flow
 
-创意阶段统一闭环：
-
-```text
-生成 -> 规则校验 -> 语义门禁 -> 不过则带 fix_instructions 重跑
-```
-
-回环上限：`VIDEOGEO_MAX_RETRIES_PER_STAGE`，默认 `2`。
-
-所有命令在仓库根目录执行。PowerShell mock 环境：
+Set environment in PowerShell:
 
 ```powershell
-$env:VIDEOGEO_USE_MOCKS="true"
 $env:PYTHONIOENCODING="utf-8"
+$env:VIDEOGEO_USE_MOCKS="true"
 ```
 
-### 0. 归一化需求
+Use `VIDEOGEO_USE_MOCKS=false` only when real media generation is intended and
+the chorify-ai-service environment is ready.
 
-Leader 将用户需求写成 `runs/<id>/requirement.json`。
+### 0. Normalize Requirement
 
-缺省值：
+Leader writes `runs/<id>/requirement.json`. Fill reasonable defaults:
 
-- `platform`: `通用`
-- `duration_sec`: `15`
+- `platform`: `generic`
+- `duration_sec`: `15`, unless user requested another duration
 - `aspect_ratio`: `9:16`
 - `language`: `zh`
-- 参考图链接写入 `reference_image_urls`
+- `reference_image_urls`: product/reference images
 
-### 1. 导演 -> brief
+### 1. Director -> Brief
 
-1. 派 `director`：读 `requirement.json`，写 `brief.json`。
-2. 规则校验：
+Run `director`, then:
 
-   ```powershell
-   python -m videogeo validate brief runs/<id>/brief.json --target <duration> `
-     --out runs/<id>/gate-brief-rules-0.json
-   ```
+```powershell
+python -m videogeo validate brief runs/<id>/brief.json --target <duration> --out runs/<id>/gate-brief-rules-0.json
+```
 
-3. 派 `gate-reviewer`，rubric 为 `videogeo/gates/rubrics/brief.md`，输出
-   `gate-brief-0.json`。
-4. validate 或 gate 不过时，把问题和整改指令回灌给 `director`，直到超过阶段上限。
+Then run `gate-reviewer` with `videogeo/gates/rubrics/brief.md`.
+If rules or gate fail, feed issues back to `director` and rewrite the complete file.
 
-### 2. 脚本编排 -> script
+### 2. Script-Orchestrator -> Script
 
-1. 派 `script-orchestrator`：读 `brief.json` 和 `requirement.json`，写 `script.json`。
-2. 执行 `validate script --out runs/<id>/gate-script-rules-0.json`。
-3. 派 `gate-reviewer`，rubric 为 `videogeo/gates/rubrics/script.md`。
-4. 不过则带整改指令重跑。
+Run `script-orchestrator`. It must produce:
 
-### 3. 编译 -> plan
+- one `global_narrative`
+- storyboard `shots`
+- actual render `segments`
+- executable `bgm_direction`
 
-确定性阶段，无语义门禁：
+For 25s TVC: exactly two render segments, covering all storyboard shots.
+
+Then:
+
+```powershell
+python -m videogeo validate script runs/<id>/script.json --target <duration> --out runs/<id>/gate-script-rules-0.json
+```
+
+Then run `gate-reviewer` with `videogeo/gates/rubrics/script.md`.
+
+### 3. Compile -> Plan
 
 ```powershell
 python -m videogeo compile runs/<id>/script.json --run <id> `
-  --ref "<逗号拼接的 requirement.reference_image_urls>" --target <duration> `
+  --ref "<comma-separated requirement.reference_image_urls>" --target <duration> `
   --out runs/<id>/plan.json
 ```
 
-命令打印出的 outline 是给用户看的执行计划。
+Compile uses `segments` first. If `segments` exist, video steps are `seg0.vid`,
+`seg1.vid`, etc. `shots` remain storyboard references.
 
-### 4. 渲染 -> assets
+### 4. Concurrent Render -> Assets
 
 ```powershell
 python -m videogeo render runs/<id>/plan.json --assets runs/<id>/assets.json
 ```
 
-执行器运行 image/video/TTS/music 步骤，并原地更新 `plan.json`。重跑时会跳过已完成步骤。
+Render runs ready steps concurrently. BGM and TTS are not blocked behind video
+unless dependencies require it. Tuning:
 
-然后执行 `validate assets --out runs/<id>/gate-assets-rules-0.json`，并派 `gate-reviewer` 使用
-`videogeo/gates/rubrics/assets.md` 审核。素材缺失或无效时重跑 `render`。
+- `VIDEOGEO_RENDER_CONCURRENCY=4`
+- `VIDEOGEO_VIDEO_CONCURRENCY=2`
 
-### 5. 剪辑 -> final
+Then validate and gate `assets.json`.
 
-1. 派 `editor`：读 `assets.json` 和 `script.json`，写 `final.json`。
-2. 执行 `validate final --out runs/<id>/gate-final-rules-0.json`。
-3. 派 `gate-reviewer`，rubric 为 `videogeo/gates/rubrics/final.md`。
-4. 不过则带整改指令重跑。
+### 5. Editor -> Final
 
-### 6. 合成 -> 成片
+Run `editor` to write `final.json`. Timeline references rendered segment indices,
+not storyboard micro-shot indices. Then:
+
+```powershell
+python -m videogeo validate final runs/<id>/final.json --target <duration> --out runs/<id>/gate-final-rules-0.json
+```
+
+Then run `gate-reviewer` with `videogeo/gates/rubrics/final.md`.
+
+### 6. Assemble
 
 ```powershell
 python -m videogeo assemble runs/<id>/plan.json --final runs/<id>/final.json
 ```
 
-执行器把 editor 的 timeline 并入 concat 步骤，并把最终 `video_url` 写回 `final.json`。
+The executor writes final `video_url` back into `final.json`.
 
-### 7. 汇总
+## Maintenance Rules
 
-向用户报告：
-
-- 成片 URL。
-- 各阶段是否一次通过，以及重跑次数。
-- 最终 `plan.json` 状态摘要。
-- `runs/<id>/` 下的产物清单。
-
-若任一阶段超过重试上限，停在该阶段，并把 gate 的 `fix_instructions` 交给用户决策。
-
-## 维护规则
-
-- `AGENTS.md` 是唯一 Leader 编排入口。
-- `.agents/skills/videogeo-run/SKILL.md` 指向 `AGENTS.md`。
-- Codex Agent 定义集中在 `.codex/agents/*.toml`。
-- 契约变更必须同步 schema、validator、agents、rubrics。
+- No legacy agent entrypoints in this repo.
+- Do not commit secrets. Keep real infrastructure values in local `.env` or server environment variables.
+- When changing schemas, update validators, rubrics, agent TOMLs, README, and skill instructions in the same commit.

@@ -1,59 +1,68 @@
 # videoGEO2
 
-多 Agent 视频生成编排框架。**Codex 当大脑，Python 当薄执行器。**
+Codex-native multi-agent video generation framework.
 
-一句话需求 → 导演（创意/叙事/氛围/画质）→ 脚本编排（可执行分镜）→ 编译成可执行计划
-`plan.json` → 渲染 → 剪辑（时间线）→ 合成成片。每一阶段都过审核门禁（规则预校验 +
-语义评审），不过则带反馈自动回环重跑。
+Codex is the brain. Python is the thin executor. The pipeline turns a user
+video request into structured artifacts, gates every semantic stage, compiles a
+deterministic `plan.json`, renders media concurrently, and assembles the final
+video.
 
-## 设计
+## Current TVC Kernel
 
-- **大脑 = Codex Leader**：编排流程写死在 [`AGENTS.md`](AGENTS.md)；导演/脚本编排/剪辑/门禁是
-  `.codex/agents/` 下的 subagents（门禁是唯一一个 Agent，按 rubric 适配各阶段）。
-- **Skill 入口 = `.agents/skills/videogeo-run/`**：当用户要求生成视频、短视频、广告片或运行
-  videoGEO 流水线时触发，按 `AGENTS.md` 创建 run、驱动阶段闭环、汇总结果。
-- **薄执行器 = `videogeo` 包**：只做确定性工作，把脚本编译成 `plan.json`，按计划调
-  chorify-ai-service 渲染/合成。无创意决策。
-- **媒体能力**：图/视频/TTS/音乐/ffmpeg 合成委托 chorify-ai-service `/v1/*`。
-  v1 默认 `VIDEOGEO_USE_MOCKS=true` 全程 mock。
-
-## 用法
-
-最自然的方式：在 Codex 里直接说「帮我生成一支 XXX 短视频」，触发 `videogeo-run` skill，
-它按 `AGENTS.md` 跑完整条流水线。
-
-薄执行器也可单独用（mock）：
-
-```bash
-export VIDEOGEO_USE_MOCKS=true PYTHONIOENCODING=utf-8
-python -m videogeo compile  runs/<id>/script.json --run <id> --ref "<参考图url>" --target 15 --out runs/<id>/plan.json
-python -m videogeo render    runs/<id>/plan.json --assets runs/<id>/assets.json
-python -m videogeo assemble  runs/<id>/plan.json --final  runs/<id>/final.json
-python -m videogeo validate  script runs/<id>/script.json --target 15
-python -m videogeo outline   runs/<id>/plan.json
-```
-
-## 目录
+The main product/TVC flow is:
 
 ```text
-AGENTS.md                     写死的 Codex Leader 编排流程
-.codex/agents/                director / script-orchestrator / editor / gate-reviewer
-.agents/skills/videogeo-run/  触发入口
-videogeo/
-  schemas/                    产物契约（Requirement -> Brief -> Script -> Plan -> Assets -> Final + GateVerdict）
-  capabilities/               媒体能力（base 协议 + mock + ai_service 真实 HTTP adapter）
-  compile.py                  VideoScript -> plan.json
-  executor.py                 跑 plan、原地回填状态、断点续
-  gates/                      rules.py 规则预校验 + rubrics/ 给门禁 subagent 的评审标准
-  __main__.py                 CLI: compile/render/assemble/validate/outline
-runs/<run_id>/                每次运行的产物（不提交）
+requirement -> brief -> global script -> storyboard shots -> render segments
+  -> plan -> concurrent render -> assets -> final timeline -> assemble
 ```
 
-## 接真实媒体
+For a 25s TVC, `script.json` should contain storyboard micro-shots but only two
+actual render segments. TTS and BGM are independent plan steps and can run while
+video jobs are rendering.
 
-设 `VIDEOGEO_USE_MOCKS=false`。真实 video step 优先通过 `VIDEOGEO_AI_SERVICE_REPO`
-直连 chorify-ai-service 的 `seedance_service.run_full`，避免 Windows 本地 DB 型 HTTP
-路由的 event loop 问题；TTS、音乐、concat 仍通过 `VIDEOGEO_AI_SERVICE_BASE_URL`
-调用 `/v1/tts/*`、`/v1/long-video/concat`。编排流程不变，入口仍是 `plan.json`。
+## Usage
 
-真实服务器、OSS、飞书、GitHub 等密钥只放本地 `.env` 或服务器环境变量，禁止提交。
+In Codex, ask for a video and use the `videogeo-run` skill. The authoritative
+orchestration rules live in [`AGENTS.md`](AGENTS.md).
+
+Executor commands can also be run directly:
+
+```bash
+export VIDEOGEO_USE_MOCKS=true
+export PYTHONIOENCODING=utf-8
+
+python -m videogeo validate script runs/<id>/script.json --target 25
+python -m videogeo compile runs/<id>/script.json --run <id> --ref "<image-url>" --target 25 --out runs/<id>/plan.json
+python -m videogeo render runs/<id>/plan.json --assets runs/<id>/assets.json
+python -m videogeo assemble runs/<id>/plan.json --final runs/<id>/final.json
+```
+
+PowerShell:
+
+```powershell
+$env:VIDEOGEO_USE_MOCKS="true"
+$env:PYTHONIOENCODING="utf-8"
+```
+
+## Repository Layout
+
+```text
+AGENTS.md                     Codex Leader orchestration contract
+.codex/agents/                director / script-orchestrator / editor / gate-reviewer
+.agents/skills/videogeo-run/  Codex skill entry
+videogeo/
+  schemas/                    Requirement -> Brief -> Script -> Plan -> Assets -> Final + GateVerdict
+  capabilities/               mock + chorify-ai-service adapter
+  compile.py                  VideoScript -> plan.json
+  executor.py                 concurrent render, resumable plan status
+  gates/                      deterministic rules + semantic rubrics
+  __main__.py                 CLI
+runs/<run_id>/                generated artifacts, ignored by git
+docs/                         sanitized infrastructure notes
+```
+
+## Real Media Mode
+
+Set `VIDEOGEO_USE_MOCKS=false` and configure chorify-ai-service in `.env`.
+Real secrets must stay out of git. Use `.env.example` and
+`docs/development-infrastructure.md` as safe templates.

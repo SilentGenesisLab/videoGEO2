@@ -1,14 +1,29 @@
-# 门禁 rubric · script（脚本编排产物 VideoScript）
+# Script Gate Rubric
 
-逐条判定。任一 blocker 不过则 passed=false。
+Judge `script.json` as a TVC production contract. Any blocker means
+`passed=false`.
 
-- **分镜顺序**（blocker）：index 是否从 0 连续递增、顺序即时间线、无重复。
-- **prompt 可执行**（blocker）：每个分镜的 image_prompt / video_prompt 是否具体到能直接喂生成模型
-  （有主体、动作、镜头、风格），不能是空话或占位。
-- **总时长贴合**（major）：所有分镜 duration_sec 之和是否贴近目标总时长，**偏差 > 20% 判 major**。
-  另注意单镜时长最终会被吸附到 5/10/15s 档位，过短/过长要提示。
-- **旁白与画面匹配**（major）：narration 是否与该镜画面一致，整体是否覆盖核心卖点。
-- **承接 brief**（minor）：氛围、视觉风格是否延续 CreativeBrief，没有跑偏。
-- **不违反硬约束**（blocker）：是否触碰 requirement.constraints。
+- **Global script exists** (blocker): `global_narrative` must contain a clear
+  whole-film story, visual spine, narration spine, and funnel. A list of shots
+  without a global idea fails.
+- **Storyboard is concrete** (blocker): `shots[*].image_prompt` and
+  `shots[*].video_prompt` must be specific enough for image/video generation:
+  subject, composition, light, material, camera, motion, and constraints.
+- **Two-segment 25s TVC** (blocker for 25s jobs): a 25s TVC must have exactly
+  two `segments`, each `<=15s`, covering all storyboard shots.
+- **Segments are renderable** (blocker): each segment must have a complete
+  I2V prompt, duration, narration/text strategy, and storyboard coverage.
+- **Storyboard reference policy** (major): storyboard references should guide
+  prompts, but `feed_storyboard_seed` should remain false unless justified.
+- **Narration/visual sync** (major): narration must match the segment visuals
+  and fit the segment duration.
+- **TVC rhythm** (major): the whole film should use a two-part rhythm:
+  hook/build -> proof/landing, with product/person/detail alternation where
+  appropriate.
+- **Brief alignment** (major): visual tone, selling points, constraints, and
+  target market must continue the director brief.
+- **Safety and product constraints** (blocker): no forbidden claims, no
+  problem-skin closeups as the main appeal, no incoherent before/after gimmick.
 
-fix_instructions：指明哪个 shots[i] 的哪个字段怎么改。
+`fix_instructions` must name the exact fields to rewrite, such as
+`global_narrative.arc`, `shots[3].video_prompt`, or `segments[1].shot_indices`.

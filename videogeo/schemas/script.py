@@ -1,35 +1,86 @@
-"""VideoScript — 脚本编排 Agent 的产物：可执行的分镜 JSON 序列。
+"""VideoScript contract.
 
-每个 Shot 是渲染层可直接消费的指令：图像 prompt、视频 prompt、旁白文本、
-时长、转场。Renderer 遍历这些 Shot 逐一调媒体能力生成素材。
+The script-orchestrator writes one global TVC script, then breaks it into:
+- storyboard shots: micro-shot references for rhythm, composition, and prompts
+- render segments: the actual video generation units consumed by compile/render
+
+This keeps the creative script concrete without forcing the renderer to create
+one expensive video job per micro-shot.
 """
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
 
-class Shot(BaseModel):
-    """单个分镜 —— 渲染层的最小可执行单元。"""
+class GlobalNarrative(BaseModel):
+    """One-film story spine used by all storyboard shots and render segments."""
 
-    index: int = Field(ge=0, description="分镜序号，从 0 起，决定时间线顺序")
-    beat: str = Field(default="", description="所属叙事节拍名（关联 CreativeBrief.beats）")
-    duration_sec: float = Field(gt=0, description="该分镜时长（秒）")
-    image_prompt: str = Field(description="首帧/参考图的图像生成 prompt")
-    video_prompt: str = Field(description="视频生成 prompt（运动、镜头、内容）")
-    narration: str = Field(default="", description="旁白文本；空则该镜无旁白")
-    on_screen_text: str = Field(default="", description="屏幕字幕/标题文字")
-    transition: str = Field(default="cut", description="进入下一镜的转场：cut / fade / dissolve")
+    logline: str = Field(default="", description="One sentence creative promise")
+    arc: str = Field(default="", description="Beginning -> build -> climax -> landing")
+    funnel: str = Field(default="", description="Attention -> desire -> proof -> action")
+    narration_spine: str = Field(default="", description="Full-film voiceover idea before splitting")
+    visual_spine: str = Field(default="", description="Full-film visual continuity and motif")
+    pacing: str = Field(default="two-segment-tvc", description="Pacing system, e.g. two-segment-tvc")
+
+
+class Shot(BaseModel):
+    """Storyboard micro-shot.
+
+    A shot is a precise visual/narrative reference. It is not necessarily a
+    separate render job. Render jobs are represented by RenderSegment.
+    """
+
+    index: int = Field(ge=0, description="Storyboard shot index, starting at 0")
+    beat: str = Field(default="", description="Narrative beat name from the brief")
+    duration_sec: float = Field(gt=0, description="Storyboard timing reference in seconds")
+    image_prompt: str = Field(description="Concrete still/storyboard prompt")
+    video_prompt: str = Field(description="Concrete motion/camera prompt for this micro-shot")
+    narration: str = Field(default="", description="Local voiceover text, optional")
+    on_screen_text: str = Field(default="", description="Short on-screen copy")
+    transition: str = Field(default="cut", description="cut / fade / dissolve")
+
+
+class RenderSegment(BaseModel):
+    """Actual video generation segment.
+
+    For a 25s TVC this should normally be two segments, e.g. 12+13 or 10+15,
+    instead of five independent 5s clips. Storyboard shots remain available as
+    references through shot_indices and storyboard_prompt.
+    """
+
+    index: int = Field(ge=0, description="Render segment index, starting at 0")
+    name: str = Field(default="", description="Human-readable segment name")
+    beat: str = Field(default="", description="Major beat covered by the segment")
+    duration_sec: float = Field(gt=0, le=15, description="Requested render duration; keep <=15s")
+    shot_indices: list[int] = Field(default_factory=list, description="Storyboard shots covered")
+    storyboard_prompt: str = Field(default="", description="Storyboard/reference description for this segment")
+    video_prompt: str = Field(description="Full segment I2V prompt with motion, camera, and continuity")
+    narration: str = Field(default="", description="Segment voiceover text")
+    on_screen_text: str = Field(default="", description="Short segment on-screen text")
+    transition: str = Field(default="cut", description="Transition into the next segment")
+    feed_storyboard_seed: bool = Field(
+        default=False,
+        description="Whether to feed generated storyboard as the Seedance seed. Default false.",
+    )
 
 
 class VideoScript(BaseModel):
-    """完整分镜脚本：有序 Shot 序列 + 全局元信息。"""
+    """Complete script: global story, storyboard references, and render segments."""
 
-    title: str = Field(description="片名/工作标题")
-    aspect_ratio: str = Field(default="9:16", description="画幅，沿用 Requirement")
-    shots: list[Shot] = Field(description="按 index 有序的分镜列表")
-    bgm_direction: str = Field(default="", description="背景音乐方向描述")
+    title: str = Field(description="Working title")
+    aspect_ratio: str = Field(default="9:16", description="Inherited from Requirement")
+    global_narrative: GlobalNarrative = Field(default_factory=GlobalNarrative)
+    shots: list[Shot] = Field(description="Storyboard micro-shots in timeline order")
+    segments: list[RenderSegment] = Field(default_factory=list, description="Actual render units")
+    bgm_direction: str = Field(default="", description="Executable music direction")
 
     @property
     def total_duration_sec(self) -> float:
-        """所有分镜时长之和。门禁据此校验是否贴合目标时长。"""
+        """Preferred total duration.
+
+        New scripts use segments as the execution timeline; legacy scripts fall
+        back to the storyboard shot durations.
+        """
+        if self.segments:
+            return sum(s.duration_sec for s in self.segments)
         return sum(s.duration_sec for s in self.shots)

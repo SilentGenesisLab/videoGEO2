@@ -1,7 +1,7 @@
-"""rules —— 确定性规则预校验，每阶段一个函数，返回 GateVerdict。
+"""Deterministic pre-gate rules.
 
-便宜、无 LLM、可在 CLI（videogeo validate）里跑。语义层面的好坏交给 gate-reviewer
-subagent；这里只拦"机器能判死"的硬伤，省 token 也防 LLM 漏判。
+These checks catch structural problems before the semantic gate-reviewer is
+asked to judge creative quality.
 """
 from __future__ import annotations
 
@@ -20,41 +20,101 @@ def _verdict(issues: list[GateIssue], fix: str) -> GateVerdict:
 
 
 def check_brief(brief: CreativeBrief, *, target_duration_sec: int) -> GateVerdict:
-    """beats 时长之和应贴近目标（偏差 > 30% 视为 blocker）。"""
     issues: list[GateIssue] = []
     total = sum(b.est_duration_sec for b in brief.beats)
     if not brief.beats:
-        issues.append(GateIssue(severity="blocker", field="beats", message="beats 为空"))
+        issues.append(GateIssue(severity="blocker", field="beats", message="beats is empty"))
     elif target_duration_sec and abs(total - target_duration_sec) / target_duration_sec > 0.30:
         issues.append(
             GateIssue(
                 severity="blocker",
                 field="beats",
-                message=f"beats 时长之和 {total}s 偏离目标 {target_duration_sec}s 超过 30%",
+                message=f"beat duration total {total}s is too far from target {target_duration_sec}s",
             )
         )
     if not brief.concept.strip():
-        issues.append(GateIssue(severity="blocker", field="concept", message="核心创意为空"))
-    return _verdict(issues, "调整 beats 时长使之贴近目标，并补全核心创意。")
+        issues.append(GateIssue(severity="blocker", field="concept", message="concept is empty"))
+    return _verdict(issues, "Fix beat duration and fill the core concept.")
 
 
 def check_script(script: VideoScript, *, target_duration_sec: int) -> GateVerdict:
-    """index 从 0 连续；prompt 非空；总时长偏差 > 20% 视为 blocker。"""
     issues: list[GateIssue] = []
-    if not script.shots:
-        issues.append(GateIssue(severity="blocker", field="shots", message="无分镜"))
-        return _verdict(issues, "至少产出 1 个分镜。")
-
-    indices = [s.index for s in sorted(script.shots, key=lambda s: s.index)]
-    if indices != list(range(len(indices))):
+    if not script.global_narrative.logline.strip() and not script.global_narrative.arc.strip():
         issues.append(
-            GateIssue(severity="blocker", field="shots", message=f"index 非从 0 连续递增: {indices}")
+            GateIssue(
+                severity="blocker",
+                field="global_narrative",
+                message="global narrative is missing; write the whole-film story before shots",
+            )
         )
-    for s in script.shots:
-        if not s.image_prompt.strip():
-            issues.append(GateIssue(severity="blocker", field=f"shots[{s.index}].image_prompt", message="为空"))
-        if not s.video_prompt.strip():
-            issues.append(GateIssue(severity="blocker", field=f"shots[{s.index}].video_prompt", message="为空"))
+    if not script.shots:
+        issues.append(GateIssue(severity="blocker", field="shots", message="storyboard shots are empty"))
+    else:
+        _check_indices("shots", [s.index for s in sorted(script.shots, key=lambda s: s.index)], issues)
+        for s in script.shots:
+            if not s.image_prompt.strip():
+                issues.append(GateIssue(severity="blocker", field=f"shots[{s.index}].image_prompt", message="empty"))
+            if not s.video_prompt.strip():
+                issues.append(GateIssue(severity="blocker", field=f"shots[{s.index}].video_prompt", message="empty"))
+
+    if script.segments:
+        _check_indices("segments", [s.index for s in sorted(script.segments, key=lambda s: s.index)], issues)
+        shot_ids = {s.index for s in script.shots}
+        covered: set[int] = set()
+        for seg in script.segments:
+            if seg.duration_sec > 15:
+                issues.append(
+                    GateIssue(
+                        severity="blocker",
+                        field=f"segments[{seg.index}].duration_sec",
+                        message="render segment exceeds 15s",
+                    )
+                )
+            if not seg.video_prompt.strip():
+                issues.append(GateIssue(severity="blocker", field=f"segments[{seg.index}].video_prompt", message="empty"))
+            if not seg.shot_indices:
+                issues.append(
+                    GateIssue(
+                        severity="major",
+                        field=f"segments[{seg.index}].shot_indices",
+                        message="segment does not reference storyboard shots",
+                    )
+                )
+            missing = [i for i in seg.shot_indices if i not in shot_ids]
+            if missing:
+                issues.append(
+                    GateIssue(
+                        severity="blocker",
+                        field=f"segments[{seg.index}].shot_indices",
+                        message=f"unknown storyboard shots: {missing}",
+                    )
+                )
+            covered.update(i for i in seg.shot_indices if i in shot_ids)
+        uncovered = sorted(shot_ids - covered)
+        if uncovered:
+            issues.append(
+                GateIssue(
+                    severity="major",
+                    field="segments",
+                    message=f"storyboard shots not covered by render segments: {uncovered}",
+                )
+            )
+        if target_duration_sec == 25 and len(script.segments) != 2:
+            issues.append(
+                GateIssue(
+                    severity="blocker",
+                    field="segments",
+                    message="25s TVC must use exactly two render segments",
+                )
+            )
+    else:
+        issues.append(
+            GateIssue(
+                severity="major",
+                field="segments",
+                message="legacy mode: no render segments; compile will render each shot",
+            )
+        )
 
     total = script.total_duration_sec
     if target_duration_sec and abs(total - target_duration_sec) / target_duration_sec > 0.20:
@@ -62,46 +122,46 @@ def check_script(script: VideoScript, *, target_duration_sec: int) -> GateVerdic
             GateIssue(
                 severity="major",
                 field="duration",
-                message=f"分镜总时长 {total}s 偏离目标 {target_duration_sec}s 超过 20%",
+                message=f"script total {total}s is too far from target {target_duration_sec}s",
             )
         )
-    return _verdict(issues, "修正 index 连续性、补全空 prompt、调整总时长贴近目标。")
+    return _verdict(
+        issues,
+        "Write global_narrative, storyboard shots, and render segments; for 25s use two <=15s segments covering all shots.",
+    )
+
+
+def _check_indices(field: str, indices: list[int], issues: list[GateIssue]) -> None:
+    if indices != list(range(len(indices))):
+        issues.append(GateIssue(severity="blocker", field=field, message=f"indices must start at 0 and be continuous: {indices}"))
 
 
 def check_assets(assets: RenderedAssets) -> GateVerdict:
-    """渲染完整性：每个分镜必须有 clip_url（纯规则，assets 阶段主门禁）。"""
     issues: list[GateIssue] = []
     if not assets.shots:
-        issues.append(GateIssue(severity="blocker", field="shots", message="无任何分镜素材"))
+        issues.append(GateIssue(severity="blocker", field="shots", message="no rendered segment assets"))
     missing = [a.shot_index for a in assets.shots if not a.clip_url]
     if missing:
-        issues.append(
-            GateIssue(severity="blocker", field=f"shots{missing}", message="缺少视频片段，无法剪辑")
-        )
-    return _verdict(issues, f"重跑分镜 {missing} 的图生视频步骤。" if missing else "重跑渲染。")
+        issues.append(GateIssue(severity="blocker", field=f"shots{missing}", message="missing video clips"))
+    return _verdict(issues, f"Re-run render for segments {missing}." if missing else "Re-run render.")
 
 
 def check_final(final: FinalVideo, *, target_duration_sec: int) -> GateVerdict:
-    """成片时间线连续无重叠、总时长贴近目标。
-
-    注意：本门禁在 concat **之前**审剪辑的 timeline，video_url 此时本就为空（由 assemble
-    填充），因此不校验 url —— 只判时间线与时长。
-    """
     issues: list[GateIssue] = []
     if not final.timeline:
-        issues.append(GateIssue(severity="blocker", field="timeline", message="时间线为空"))
+        issues.append(GateIssue(severity="blocker", field="timeline", message="timeline is empty"))
     tl = sorted(final.timeline, key=lambda t: t.start_sec)
     for a, b in zip(tl, tl[1:]):
         if b.start_sec < a.end_sec - 0.01:
-            issues.append(
-                GateIssue(severity="major", field="timeline", message=f"片段重叠: {a.shot_index}/{b.shot_index}")
-            )
+            issues.append(GateIssue(severity="major", field="timeline", message=f"overlap: {a.shot_index}/{b.shot_index}"))
         elif b.start_sec > a.end_sec + 0.01:
-            issues.append(
-                GateIssue(severity="minor", field="timeline", message=f"片段间空洞: {a.shot_index}/{b.shot_index}")
-            )
+            issues.append(GateIssue(severity="minor", field="timeline", message=f"gap: {a.shot_index}/{b.shot_index}"))
     if target_duration_sec and final.duration_sec and abs(final.duration_sec - target_duration_sec) / target_duration_sec > 0.20:
         issues.append(
-            GateIssue(severity="major", field="duration", message=f"成片 {final.duration_sec}s 偏离目标 {target_duration_sec}s 超过 20%")
+            GateIssue(
+                severity="major",
+                field="duration",
+                message=f"final duration {final.duration_sec}s is too far from target {target_duration_sec}s",
+            )
         )
-    return _verdict(issues, "修正时间线连续性与总时长。")
+    return _verdict(issues, "Fix timeline continuity and final duration.")

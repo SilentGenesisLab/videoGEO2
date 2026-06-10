@@ -1,16 +1,17 @@
-"""executor —— 薄执行器：遍历 Plan 的步骤，调 capabilities 生成素材，原地回填状态。
+"""Plan executor.
 
-这是整个框架里唯一"干活"的确定性组件（非 LLM、无创意）。它：
-- 按依赖就绪顺序跑步骤（ready_steps），每步 running→done/failed，输出回填到 step.output；
-- 因 plan.json 同时是状态，中断后重新加载只跑未完成步骤即可断点续跑；
-- 分两相：render（image/video/tts/music）→ 交剪辑 subagent 排时间线 → assemble（concat）。
-
-真实 ai-service 的视频是异步 job，但轮询细节封在 AiServiceCapabilities 内部，
-执行器只看到"调用返回最终 url"，因此对 mock / 真实一视同仁。
+The executor is deterministic: it walks ready plan steps, calls capabilities,
+and writes status back into plan.json. Render steps are concurrent by default so
+TTS/BGM can start while video jobs are running.
 """
 from __future__ import annotations
 
+import asyncio
+import time
+from datetime import datetime, timezone
+
 from videogeo.capabilities.base import CapabilityClient
+from videogeo.config import get_settings
 from videogeo.schemas.assets import RenderedAssets, ShotAssets
 from videogeo.schemas.plan import Plan, PlanStep
 
@@ -18,16 +19,23 @@ RENDER_TYPES = {"image", "video", "tts", "music"}
 ASSEMBLE_TYPES = {"concat"}
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 async def _run_step(step: PlanStep, plan: Plan, cap: CapabilityClient) -> None:
-    """跑单个步骤；异常不抛出，记到 step.error 让上层决定阻断。"""
+    """Run one step and record failure on the step instead of raising."""
     step.status = "running"
+    step.error = ""
     step.attempts += 1
+    step.started_at = _now()
+    start = time.perf_counter()
     try:
         if step.type == "image":
             mode = step.inputs.get("mode", "ref")
             ref_url = step.inputs.get("ref_url", "")
             if mode == "ref" and ref_url:
-                url = ref_url  # v1：直接用参考图，不消耗生成能力
+                url = ref_url
             else:
                 url = await cap.generate_image(
                     prompt=step.inputs.get("image_prompt", ""),
@@ -43,7 +51,7 @@ async def _run_step(step: PlanStep, plan: Plan, cap: CapabilityClient) -> None:
                 duration_sec=float(step.inputs.get("duration_sec", 5)),
                 aspect_ratio=step.inputs.get("aspect_ratio", "9:16"),
             )
-            step.output = {"clip_url": url, "duration_sec": step.inputs.get("duration_sec", 5)}
+            step.output = {"clip_url": url, "duration_sec": float(step.inputs.get("duration_sec", 5))}
 
         elif step.type == "tts":
             url = await cap.synthesize_speech(
@@ -78,18 +86,34 @@ async def _run_step(step: PlanStep, plan: Plan, cap: CapabilityClient) -> None:
             )
             step.output = {"video_url": url, "duration_sec": total}
 
-        else:  # pragma: no cover - schema 已约束 type
-            raise ValueError(f"未知步骤类型: {step.type}")
+        else:  # pragma: no cover
+            raise ValueError(f"Unknown step type: {step.type}")
 
         step.status = "done"
-        step.error = ""
-    except Exception as e:  # noqa: BLE001 - 故意吞掉，转成 failed 状态供门禁/重跑
+    except Exception as exc:  # noqa: BLE001 - persisted into plan for resumable recovery
         step.status = "failed"
-        step.error = f"{type(e).__name__}: {e}"
+        step.error = f"{type(exc).__name__}: {exc}"
+    finally:
+        step.finished_at = _now()
+        step.elapsed_sec = round(time.perf_counter() - start, 3)
+
+
+async def _run_step_limited(
+    step: PlanStep,
+    plan: Plan,
+    cap: CapabilityClient,
+    total_sem: asyncio.Semaphore,
+    video_sem: asyncio.Semaphore,
+) -> None:
+    async with total_sem:
+        if step.type == "video":
+            async with video_sem:
+                await _run_step(step, plan, cap)
+        else:
+            await _run_step(step, plan, cap)
 
 
 def _dep_output(step: PlanStep, plan: Plan, key: str) -> str:
-    """从 step 的前置依赖里取某个输出字段（如 video 取其 image 的 image_url）。"""
     for dep_id in step.depends_on:
         dep = plan.step(dep_id)
         if dep and dep.output and key in dep.output:
@@ -98,16 +122,15 @@ def _dep_output(step: PlanStep, plan: Plan, key: str) -> str:
 
 
 def _ordered_clip_urls(concat_step: PlanStep, plan: Plan) -> list[str]:
-    """concat 的片段顺序：优先用剪辑 subagent 填的 timeline，否则按 depends_on 原序。"""
     timeline = concat_step.inputs.get("timeline") or []
     if timeline:
         order = [int(t["shot_index"]) for t in timeline]
-        by_shot = {
+        by_segment = {
             s.shot_index: s.output["clip_url"]
             for s in plan.steps
             if s.type == "video" and s.output and s.output.get("clip_url")
         }
-        return [by_shot[i] for i in order if i in by_shot]
+        return [by_segment[i] for i in order if i in by_segment]
     return [
         plan.step(dep).output["clip_url"]  # type: ignore[union-attr,index]
         for dep in concat_step.depends_on
@@ -116,42 +139,45 @@ def _ordered_clip_urls(concat_step: PlanStep, plan: Plan) -> list[str]:
 
 
 async def execute(plan: Plan, cap: CapabilityClient, *, include: set[str]) -> Plan:
-    """跑 include 范围内所有可执行步骤直到完成或阻塞。原地修改 plan。"""
+    """Run all pending steps in include until done or blocked."""
+    settings = get_settings()
+    total_sem = asyncio.Semaphore(max(1, settings.render_concurrency))
+    video_sem = asyncio.Semaphore(max(1, settings.video_concurrency))
+
     while not plan.is_done(include=include):
         ready = plan.ready_steps(include=include)
         if not ready:
-            break  # 还有 pending 但没就绪（前置失败）→ 阻断，交上层处理
-        for step in ready:
-            await _run_step(step, plan, cap)
+            break
+        await asyncio.gather(*(_run_step_limited(s, plan, cap, total_sem, video_sem) for s in ready))
+        if plan.has_failure():
+            break
     return plan
 
 
 async def execute_render(plan: Plan, cap: CapabilityClient) -> Plan:
-    """渲染相：image/video/tts/music。完成后交剪辑 subagent 排时间线。"""
     return await execute(plan, cap, include=RENDER_TYPES)
 
 
 async def execute_assemble(plan: Plan, cap: CapabilityClient) -> Plan:
-    """合成相：concat。须在剪辑 subagent 把 timeline 写进 final 步骤 inputs 后调用。"""
     return await execute(plan, cap, include=ASSEMBLE_TYPES)
 
 
 def plan_to_assets(plan: Plan) -> RenderedAssets:
-    """从已执行的渲染步骤汇总成 RenderedAssets，喂给 assets 阶段门禁/剪辑 subagent。"""
+    """Collect render outputs into assets.json for gates and editor."""
     shots: dict[int, ShotAssets] = {}
-    for s in plan.steps:
-        if s.shot_index is None or not s.output:
+    for step in plan.steps:
+        if step.shot_index is None or not step.output:
             continue
-        cur = shots.get(s.shot_index)
+        cur = shots.get(step.shot_index)
         if cur is None:
-            cur = ShotAssets(shot_index=s.shot_index, duration_sec=1.0)
-            shots[s.shot_index] = cur
-        if s.type == "image":
-            cur.image_url = s.output.get("image_url", "")
-        elif s.type == "video":
-            cur.clip_url = s.output.get("clip_url", "")
-            cur.duration_sec = float(s.output.get("duration_sec", cur.duration_sec))
-        elif s.type == "tts":
-            cur.narration_audio_url = s.output.get("audio_url", "")
+            cur = ShotAssets(shot_index=step.shot_index, duration_sec=1.0)
+            shots[step.shot_index] = cur
+        if step.type == "image":
+            cur.image_url = step.output.get("image_url", "")
+        elif step.type == "video":
+            cur.clip_url = step.output.get("clip_url", "")
+            cur.duration_sec = float(step.output.get("duration_sec", cur.duration_sec))
+        elif step.type == "tts":
+            cur.narration_audio_url = step.output.get("audio_url", "")
     bgm = next((s.output["audio_url"] for s in plan.steps if s.type == "music" and s.output), "")
     return RenderedAssets(shots=[shots[k] for k in sorted(shots)], bgm_url=bgm)
