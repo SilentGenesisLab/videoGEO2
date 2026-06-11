@@ -41,7 +41,7 @@ class QualityScorecard(BaseModel):
         has_blocker = any(d.severity == "blocker" and d.score < threshold for d in dimensions)
         passed = score >= threshold and not has_blocker
         if not fix_instructions and not passed:
-            fixes = [d.fix for d in dimensions if d.fix]
+            fixes = [d.fix for d in dimensions if d.fix and d.score < threshold]
             fix_instructions = " | ".join(fixes[:5])
         return cls(
             stage=stage,

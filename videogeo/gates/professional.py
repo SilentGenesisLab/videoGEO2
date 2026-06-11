@@ -167,6 +167,18 @@ def _claims_are_tempered(text: str) -> float:
 
 
 def _risk_score(text: str) -> float:
+    text = text or ""
+    safe_phrases = [
+        "无医学治疗符号",
+        "不出现医学治疗",
+        "no medical claim",
+        "无乱码",
+        "no garbled text",
+        "无 before after",
+        "no before after",
+    ]
+    for phrase in safe_phrases:
+        text = text.replace(phrase, "")
     risky = ["治疗", "治愈", "永久", "无效退款", "problem skin", "before after", "畸形", "乱码"]
     hits = sum(1 for w in risky if w.lower() in (text or "").lower())
     return max(0.2, 1.0 - 0.16 * hits)
