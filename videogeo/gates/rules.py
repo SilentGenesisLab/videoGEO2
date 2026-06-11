@@ -107,6 +107,28 @@ def check_script(script: VideoScript, *, target_duration_sec: int) -> GateVerdic
                     message="25s TVC must use exactly two render segments",
                 )
             )
+        if target_duration_sec == 45:
+            if len(script.segments) not in (3, 4):
+                issues.append(
+                    GateIssue(
+                        severity="blocker",
+                        field="segments",
+                        message="45s TVC must use three or four render segments",
+                    )
+                )
+            missing_anchors = [
+                seg.index
+                for seg in script.segments
+                if not (seg.entry_state.strip() and seg.exit_state.strip() and seg.continuity_anchor.strip())
+            ]
+            if missing_anchors:
+                issues.append(
+                    GateIssue(
+                        severity="major",
+                        field="segments",
+                        message=f"45s segments missing entry/exit/continuity anchors: {missing_anchors}",
+                    )
+                )
     else:
         issues.append(
             GateIssue(

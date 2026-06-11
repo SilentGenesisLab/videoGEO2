@@ -7,6 +7,10 @@ video request into structured artifacts, gates every semantic stage, compiles a
 deterministic `plan.json`, renders Seedance segments concurrently, and assembles
 the final video.
 
+The upgraded kernel also supports weighted professional scorecards, four-round
+iteration decisions, lesson retrieval/consolidation, HyperFrames subtitle
+composition, and self-audit artifacts.
+
 ## Current TVC Kernel
 
 The main product/TVC flow is:
@@ -41,6 +45,22 @@ python -m videogeo render runs/<id>/plan.json --assets runs/<id>/assets.json
 python -m videogeo assemble runs/<id>/plan.json --final runs/<id>/final.json
 ```
 
+Professional gates and iteration:
+
+```bash
+python -m videogeo score script runs/<id>/script.json --target 25 --out runs/<id>/gate-script-score-0.json
+python -m videogeo score assets runs/<id>/assets.json --out runs/<id>/gate-video-score-0.json
+python -m videogeo iterate runs/<id> --rounds 4 --target-score 0.86
+```
+
+Subtitle post-production:
+
+```bash
+python -m videogeo captions runs/<id>/final.json --script runs/<id>/script.json --out runs/<id>/captions.json
+python -m videogeo hyperframes runs/<id>/final.json --captions runs/<id>/captions.json --out runs/<id>/final_captioned.json
+python -m videogeo audit runs/<id> --out runs/<id>/audit.json
+```
+
 PowerShell:
 
 ```powershell
@@ -56,7 +76,7 @@ AGENTS.md                     Codex Leader orchestration contract
 .codex/agents/                director / script-orchestrator / editor / gate-reviewer
 .agents/skills/videogeo-run/  Codex skill entry
 videogeo/
-  schemas/                    Requirement -> Brief -> Script -> Plan -> Assets -> Final + GateVerdict
+  schemas/                    Requirement -> Brief -> Script -> Plan -> Assets -> Final + gates/captions/audit
   capabilities/               mock + chorify-ai-service adapter
   compile.py                  VideoScript -> plan.json
   executor.py                 concurrent render, resumable plan status
@@ -64,6 +84,7 @@ videogeo/
   __main__.py                 CLI
 runs/<run_id>/                generated artifacts, ignored by git
 docs/                         sanitized infrastructure notes
+lessons/                      sanitized reusable good/bad generation lessons
 ```
 
 ## Real Media Mode

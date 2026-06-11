@@ -58,6 +58,12 @@ class RenderSegment(BaseModel):
     narration: str = Field(default="", description="Segment voiceover text")
     on_screen_text: str = Field(default="", description="Short segment on-screen text")
     transition: str = Field(default="cut", description="Transition into the next segment")
+    entry_state: str = Field(default="", description="Continuity state at segment start, especially for >30s films")
+    exit_state: str = Field(default="", description="Continuity state at segment end, especially for >30s films")
+    continuity_anchor: str = Field(
+        default="",
+        description="Product/character/light/location/last-frame anchor that keeps longer films coherent",
+    )
     feed_storyboard_seed: bool = Field(
         default=False,
         description="Whether to feed generated storyboard as the Seedance seed. Default false.",

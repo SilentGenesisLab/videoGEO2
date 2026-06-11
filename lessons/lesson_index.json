@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "files": [
+    "lessons.jsonl",
+    "video_quality.md",
+    "storyboard.md",
+    "subtitles.md",
+    "seedance.md",
+    "product_tvc.md"
+  ]
+}

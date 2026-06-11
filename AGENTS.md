@@ -10,6 +10,7 @@ The required chain is:
 
 ```text
 Leader requirement.json
+  -> lesson retrieval
   -> director brief.json
   -> gate
   -> script-orchestrator script.json
@@ -17,12 +18,20 @@ Leader requirement.json
        storyboard shots
        two render segments for 25s TVC
   -> gate
+  -> storyboard generation storyboards.json
+  -> storyboard gate
   -> compile plan.json
   -> concurrent Seedance render assets.json
   -> gate
+  -> four-round iteration loop
   -> editor final.json
   -> gate
   -> assemble final video
+  -> captions.json
+  -> HyperFrames captioned video
+  -> delivery gate
+  -> self-audit
+  -> lesson consolidation
 ```
 
 ## Architecture
@@ -45,6 +54,23 @@ Leader requirement.json
 All agents must read/write JSON with UTF-8. If Chinese text appears as mojibake,
 re-read as UTF-8 before judging content.
 
+## Lessons
+
+Before creative work, retrieve lessons:
+
+```powershell
+python -m videogeo lessons retrieve --query '{"domain":"product_tvc","provider":"seedance","stage":"script"}' `
+  --out runs/<id>/retrieved_lessons.json
+```
+
+`director`, `script-orchestrator`, `editor`, and `gate-reviewer` must read
+`retrieved_lessons.json` when present. After delivery, write
+`runs/<id>/lessons_delta.json` for new good/bad findings and consolidate:
+
+```powershell
+python -m videogeo lessons consolidate --run-dir runs/<id>
+```
+
 ## script.json Contract
 
 `script.json` is no longer just a list of executable shots. It has three layers:
@@ -57,6 +83,11 @@ For a 25s TVC, prefer a practical split of `10s + 15s` when the downstream
 video provider only exposes 5/10/15 buckets. If the provider accepts arbitrary
 durations up to 15s, `12s + 13s` is acceptable. In both cases, keep the two
 segments as one continuous global story, not two separate ads.
+
+For a 45s TVC, prefer `10s + 15s + 10s + 10s` or `15s + 15s + 15s`.
+Every render segment must include `entry_state`, `exit_state`, and
+`continuity_anchor`; otherwise the script gate treats it as insufficiently
+continuous.
 
 Storyboards are references. Do not feed a storyboard grid as the Seedance seed
 unless a later provider-specific decision explicitly sets `feed_storyboard_seed=true`.
@@ -80,6 +111,15 @@ Therefore a normal 25s TVC plan should show two video steps (`seg0.vid`,
 only for the older fallback path where separate TTS/BGM assets are generated and
 mixed after video render.
 
+Subtitles are post-production overlays. Video prompts should continue to forbid
+generated subtitles. If subtitles are needed, create `captions.json` and render a
+captioned delivery through HyperFrames:
+
+```powershell
+python -m videogeo captions runs/<id>/final.json --script runs/<id>/script.json --out runs/<id>/captions.json
+python -m videogeo hyperframes runs/<id>/final.json --captions runs/<id>/captions.json --out runs/<id>/final_captioned.json
+```
+
 ## Run Directory
 
 Each run writes to `runs/<run_id>/`:
@@ -91,7 +131,12 @@ script.json
 plan.json
 assets.json
 final.json
-gate-<stage>-<n>.json
+  gate-<stage>-<n>.json
+  captions.json
+  final_captioned.json
+  audit.json
+  iterations/
+  hyperframes/
 ```
 
 `run_id` format: `YYYYMMDD-HHMMSS-<short-random>`.
@@ -148,6 +193,12 @@ python -m videogeo validate script runs/<id>/script.json --target <duration> --o
 
 Then run `gate-reviewer` with `videogeo/gates/rubrics/script.md`.
 
+Also write a professional scorecard:
+
+```powershell
+python -m videogeo score script runs/<id>/script.json --target <duration> --out runs/<id>/gate-script-score-0.json
+```
+
 ### 3. Compile -> Plan
 
 ```powershell
@@ -175,6 +226,17 @@ steps to wait for. Tuning:
 
 Then validate and gate `assets.json`.
 
+Run professional video scoring and initialize the four-round iteration loop:
+
+```powershell
+python -m videogeo score assets runs/<id>/assets.json --out runs/<id>/gate-video-score-0.json
+python -m videogeo iterate runs/<id> --rounds 4 --target-score 0.86
+```
+
+The iteration loop must preserve accepted segments and regenerate only failing
+targets. If the current score already passes, later rounds are written as
+early-stop decisions.
+
 ### 5. Editor -> Final
 
 Run `editor` to write `final.json`. Timeline references rendered segment indices,
@@ -194,8 +256,35 @@ python -m videogeo assemble runs/<id>/plan.json --final runs/<id>/final.json
 
 The executor writes final `video_url` back into `final.json`.
 
+### 7. Captions and HyperFrames
+
+If subtitles are enabled for the run:
+
+```powershell
+python -m videogeo captions runs/<id>/final.json --script runs/<id>/script.json --out runs/<id>/captions.json
+python -m videogeo validate captions runs/<id>/captions.json --out runs/<id>/gate-captions-rules-0.json
+python -m videogeo score captions runs/<id>/captions.json --out runs/<id>/gate-captions-score-0.json
+python -m videogeo hyperframes runs/<id>/final.json --captions runs/<id>/captions.json --out runs/<id>/final_captioned.json
+```
+
+Then run delivery scoring:
+
+```powershell
+python -m videogeo score delivery runs/<id>/final.json --captions runs/<id>/captions.json --out runs/<id>/gate-delivery-score-0.json
+```
+
+### 8. Self-Audit
+
+Always write:
+
+```powershell
+python -m videogeo audit runs/<id> --out runs/<id>/audit.json
+```
+
 ## Maintenance Rules
 
 - No legacy agent entrypoints in this repo.
 - Do not commit secrets. Keep real infrastructure values in local `.env` or server environment variables.
 - When changing schemas, update validators, rubrics, agent TOMLs, README, and skill instructions in the same commit.
+- Generated media stays under ignored `runs/`; reusable sanitized lessons under
+  `lessons/` may be committed.
