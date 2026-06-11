@@ -20,6 +20,31 @@ class CapabilityClient(Protocol):
         """
         ...
 
+    async def prepare_extend_seed(
+        self,
+        *,
+        video_url: str,
+        target_duration_sec: float,
+        head_cut_sec: float,
+        blur_faces: bool,
+        blur_conf: float,
+        blur_kernel: int,
+    ) -> dict[str, str | float | bool]:
+        """Prepare the previous clip for Seedance EXTEND."""
+        ...
+
+    async def extend_video(
+        self,
+        *,
+        prompt: str,
+        image_url: str,
+        video_url: str,
+        duration_sec: float,
+        aspect_ratio: str,
+    ) -> str:
+        """Generate the next clip from a processed previous-clip seed."""
+        ...
+
     async def synthesize_speech(self, *, text: str, language: str) -> str:
         """External TTS fallback for `VIDEOGEO_AUDIO_MODE=external`."""
         ...

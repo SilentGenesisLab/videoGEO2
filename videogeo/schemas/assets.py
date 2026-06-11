@@ -15,6 +15,9 @@ class ShotAssets(BaseModel):
     native_audio: bool = Field(default=False, description="VO/BGM were requested inside Seedance prompt")
     narration_text: str = Field(default="", description="Native Seedance voiceover text")
     bgm_direction: str = Field(default="", description="Native Seedance music/sound direction")
+    generation_mode: str = Field(default="i2v", description="i2v / extend")
+    extend_seed_url: str = Field(default="", description="Prepared previous clip URL used for EXTEND")
+    face_blurred_for_extend: bool = Field(default=False, description="Whether the EXTEND seed was face-blurred")
 
 
 class RenderedAssets(BaseModel):

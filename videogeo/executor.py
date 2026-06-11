@@ -16,7 +16,7 @@ from videogeo.config import get_settings
 from videogeo.schemas.assets import RenderedAssets, ShotAssets
 from videogeo.schemas.plan import Plan, PlanStep
 
-RENDER_TYPES = {"image", "video", "tts", "music"}
+RENDER_TYPES = {"image", "prepare_extend", "video", "tts", "music"}
 ASSEMBLE_TYPES = {"concat"}
 
 
@@ -46,19 +46,47 @@ async def _run_step(step: PlanStep, plan: Plan, cap: CapabilityClient) -> None:
 
         elif step.type == "video":
             image_url = _dep_output(step, plan, "image_url")
-            url = await cap.generate_video(
-                prompt=step.inputs.get("video_prompt", ""),
-                image_url=image_url,
-                duration_sec=float(step.inputs.get("duration_sec", 5)),
-                aspect_ratio=step.inputs.get("aspect_ratio", "9:16"),
-            )
+            mode = step.inputs.get("mode", "i2v")
+            if mode == "extend":
+                seed_video_url = _dep_output(step, plan, "seed_video_url")
+                if not seed_video_url:
+                    raise ValueError("EXTEND video step requires a prepared seed_video_url")
+                url = await cap.extend_video(
+                    prompt=step.inputs.get("video_prompt", ""),
+                    image_url=image_url,
+                    video_url=seed_video_url,
+                    duration_sec=float(step.inputs.get("duration_sec", 5)),
+                    aspect_ratio=step.inputs.get("aspect_ratio", "9:16"),
+                )
+            else:
+                url = await cap.generate_video(
+                    prompt=step.inputs.get("video_prompt", ""),
+                    image_url=image_url,
+                    duration_sec=float(step.inputs.get("duration_sec", 5)),
+                    aspect_ratio=step.inputs.get("aspect_ratio", "9:16"),
+                )
             step.output = {
                 "clip_url": url,
                 "duration_sec": float(step.inputs.get("duration_sec", 5)),
+                "mode": mode,
                 "native_audio": bool(step.inputs.get("native_audio", False)),
                 "narration": step.inputs.get("narration", ""),
                 "bgm_direction": step.inputs.get("bgm_direction", ""),
             }
+
+        elif step.type == "prepare_extend":
+            prev_video_url = _dep_output(step, plan, "clip_url")
+            if not prev_video_url:
+                raise ValueError("prepare_extend step requires previous clip_url")
+            seed = await cap.prepare_extend_seed(
+                video_url=prev_video_url,
+                target_duration_sec=float(step.inputs.get("target_duration_sec", 14.8)),
+                head_cut_sec=float(step.inputs.get("head_cut_sec", 1.0)),
+                blur_faces=bool(step.inputs.get("blur_faces", True)),
+                blur_conf=float(step.inputs.get("blur_conf", 0.1)),
+                blur_kernel=int(step.inputs.get("blur_kernel", 60)),
+            )
+            step.output = dict(seed)
 
         elif step.type == "tts":
             url = await cap.synthesize_speech(
@@ -184,9 +212,13 @@ def plan_to_assets(plan: Plan) -> RenderedAssets:
         elif step.type == "video":
             cur.clip_url = step.output.get("clip_url", "")
             cur.duration_sec = float(step.output.get("duration_sec", cur.duration_sec))
+            cur.generation_mode = str(step.output.get("mode", cur.generation_mode))
             cur.native_audio = bool(step.output.get("native_audio", False))
             cur.narration_text = str(step.output.get("narration", ""))
             cur.bgm_direction = str(step.output.get("bgm_direction", ""))
+        elif step.type == "prepare_extend":
+            cur.extend_seed_url = str(step.output.get("seed_video_url", ""))
+            cur.face_blurred_for_extend = bool(step.output.get("face_blurred", False))
         elif step.type == "tts":
             cur.narration_audio_url = step.output.get("audio_url", "")
     bgm = next((s.output["audio_url"] for s in plan.steps if s.type == "music" and s.output), "")

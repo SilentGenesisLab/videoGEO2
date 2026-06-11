@@ -21,9 +21,9 @@ Leader requirement.json
   -> storyboard generation storyboards.json
   -> storyboard gate
   -> compile plan.json
-  -> concurrent Seedance render assets.json
-  -> gate
-  -> four-round iteration loop
+  -> EXTEND-chain Seedance render assets.json
+  -> multimodal visual-review gate
+  -> four-round executable iteration loop
   -> editor final.json
   -> gate
   -> assemble final video
@@ -210,32 +210,49 @@ python -m videogeo compile runs/<id>/script.json --run <id> `
 Compile uses `segments` first. If `segments` exist, video steps are `seg0.vid`,
 `seg1.vid`, etc. `shots` remain storyboard references.
 
-### 4. Concurrent Render -> Assets
+### 4. EXTEND-Chain Render -> Assets
 
 ```powershell
 python -m videogeo render runs/<id>/plan.json --assets runs/<id>/assets.json
 ```
 
-Render runs ready steps concurrently. In default `seedance_native` audio mode,
-VO/BGM are already inside the video prompts, so there are no separate TTS/BGM
-steps to wait for. Tuning:
+For multi-segment product/TVC jobs, the default is `VIDEOGEO_USE_EXTEND=true`:
+
+- `seg0.vid` is generated from the product/reference image.
+- `seg1+` use EXTEND. Before each EXTEND, the executor inserts
+  `segN.extend_seed`, which takes the previous clip, trims it to a tail-aligned
+  `14.8s` seed, applies face blur, and passes that processed video as
+  `video_urls=[seed]`.
+- This intentionally serializes video segments where continuity matters, so BGM
+  and visual state can link across segments. Image/reference steps may still run
+  independently.
+
+In default `seedance_native` audio mode, VO/BGM are already inside the video
+prompts, so there are no separate TTS/BGM steps to wait for. Tuning:
 
 - `VIDEOGEO_RENDER_CONCURRENCY=4`
 - `VIDEOGEO_VIDEO_CONCURRENCY=2`
 - `VIDEOGEO_AUDIO_MODE=seedance_native`
+- `VIDEOGEO_USE_EXTEND=true`
+- `VIDEOGEO_EXTEND_SEED_MAX_DURATION_SEC=14.8`
+- `VIDEOGEO_BLUR_FACES_BEFORE_EXTEND=true`
 
 Then validate and gate `assets.json`.
 
-Run professional video scoring and initialize the four-round iteration loop:
+Run multimodal video review, professional scoring, and the executable
+four-round iteration loop:
 
 ```powershell
-python -m videogeo score assets runs/<id>/assets.json --out runs/<id>/gate-video-score-0.json
-python -m videogeo iterate runs/<id> --rounds 4 --target-score 0.86
+python -m videogeo visual-review runs/<id> --out runs/<id>/visual_review.json
+python -m videogeo score assets runs/<id>/assets.json --visual-review runs/<id>/visual_review.json --out runs/<id>/gate-video-score-0.json
+python -m videogeo iterate runs/<id> --execute --visual-review --rounds 4 --target-score 0.86
 ```
 
 The iteration loop must preserve accepted segments and regenerate only failing
-targets. If the current score already passes, later rounds are written as
-early-stop decisions.
+targets. In EXTEND mode, regenerating one segment also regenerates downstream
+segments, because their seed depends on the previous accepted clip. A candidate
+only replaces the current assets if its score improves or it turns a failed gate
+into a passed gate.
 
 ### 5. Editor -> Final
 

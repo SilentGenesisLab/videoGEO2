@@ -91,9 +91,12 @@ def compile_plan(
 ) -> Plan:
     """Compile the creative script into deterministic media tasks."""
     audio_mode = get_settings().audio_mode.strip().lower()
+    settings = get_settings()
+    use_extend = settings.use_extend and len(_units_from_script(script)) > 1
     refs = ref_image_urls or []
     steps: list[PlanStep] = []
     clip_ids: list[str] = []
+    prev_vid_id = ""
 
     for unit in _units_from_script(script):
         prefix = "seg" if unit.is_segment else "s"
@@ -119,6 +122,26 @@ def compile_plan(
             )
         )
 
+        seed_id = ""
+        if use_extend and prev_vid_id:
+            seed_id = f"{prefix}{i}.extend_seed"
+            steps.append(
+                PlanStep(
+                    id=seed_id,
+                    title=f"{unit.name} EXTEND seed 14.8s + face blur",
+                    type="prepare_extend",
+                    shot_index=i,
+                    inputs={
+                        "target_duration_sec": settings.extend_seed_max_duration_sec,
+                        "head_cut_sec": settings.extend_seed_head_cut_sec,
+                        "blur_faces": settings.blur_faces_before_extend,
+                        "blur_conf": settings.extend_face_blur_conf,
+                        "blur_kernel": settings.extend_face_blur_kernel,
+                    },
+                    depends_on=[prev_vid_id],
+                )
+            )
+
         vid_id = f"{prefix}{i}.vid"
         native_prompt = _with_native_audio_prompt(
             unit.video_prompt,
@@ -126,13 +149,17 @@ def compile_plan(
             bgm_direction=script.bgm_direction,
             audio_mode=audio_mode,
         )
+        depends_on = [img_id]
+        if seed_id:
+            depends_on.append(seed_id)
         steps.append(
             PlanStep(
                 id=vid_id,
-                title=f"{unit.name} I2V {unit.duration_sec:g}s",
+                title=f"{unit.name} {'EXTEND' if seed_id else 'I2V'} {unit.duration_sec:g}s",
                 type="video",
                 shot_index=i,
                 inputs={
+                    "mode": "extend" if seed_id else "i2v",
                     "video_prompt": native_prompt,
                     "visual_prompt": unit.video_prompt,
                     "narration": unit.narration,
@@ -147,10 +174,11 @@ def compile_plan(
                     "transition": unit.transition,
                     "on_screen_text": unit.on_screen_text,
                 },
-                depends_on=[img_id],
+                depends_on=depends_on,
             )
         )
         clip_ids.append(vid_id)
+        prev_vid_id = vid_id
 
         if audio_mode == "external" and unit.narration.strip():
             steps.append(

@@ -6,6 +6,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from videogeo.audit import build_audit
 from videogeo.capabilities.base import CapabilityClient
@@ -23,7 +24,12 @@ from videogeo.gates.professional import (
     score_video_assets,
 )
 from videogeo.hyperframes import render_hyperframes
-from videogeo.iteration import initialize_iterations
+from videogeo.iteration import (
+    compare_assets,
+    initialize_iterations,
+    plan_targets_from_decision,
+    reset_plan_for_targets,
+)
 from videogeo.lessons import append_lesson, consolidate_lessons, retrieve_lessons
 from videogeo.schemas.assets import RenderedAssets
 from videogeo.schemas.brief import CreativeBrief
@@ -32,6 +38,7 @@ from videogeo.schemas.edit import FinalVideo
 from videogeo.schemas.lessons import Lesson
 from videogeo.schemas.plan import Plan
 from videogeo.schemas.script import VideoScript
+from videogeo.visual_review import load_visual_review, review_assets
 
 
 def _capabilities() -> CapabilityClient:
@@ -160,7 +167,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
     elif args.stage == "storyboard":
         card = score_storyboard(json.loads(raw))
     elif args.stage == "assets":
-        card = score_video_assets(RenderedAssets.model_validate_json(raw))
+        card = score_video_assets(RenderedAssets.model_validate_json(raw), visual_review=load_visual_review(args.visual_review))
     elif args.stage == "captions":
         card = score_captions(CaptionPlan.model_validate_json(raw))
     elif args.stage == "delivery":
@@ -205,6 +212,8 @@ def _cmd_hyperframes(args: argparse.Namespace) -> int:
 
 
 def _cmd_iterate(args: argparse.Namespace) -> int:
+    if args.execute:
+        return asyncio.run(_cmd_iterate_execute(args))
     run_dir = Path(args.run_dir)
     assets_path = Path(args.assets or run_dir / "assets.json")
     assets = RenderedAssets.model_validate_json(_read(assets_path))
@@ -217,6 +226,92 @@ def _cmd_iterate(args: argparse.Namespace) -> int:
     summary = {"rounds": len(cards), "scores": [c.score for c in cards], "passed": any(c.passed for c in cards)}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
+
+
+async def _cmd_iterate_execute(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    root = run_dir / "iterations"
+    root.mkdir(parents=True, exist_ok=True)
+    assets_path = Path(args.assets or run_dir / "assets.json")
+    plan_path = Path(args.plan or run_dir / "plan.json")
+    script_path = Path(args.script or run_dir / "script.json")
+    plan = Plan.model_validate_json(_read(plan_path))
+    assets = RenderedAssets.model_validate_json(_read(assets_path))
+    script = VideoScript.model_validate_json(_read(script_path)) if script_path.exists() else None
+    cap = _capabilities()
+
+    scores: list[float] = []
+    accepted_rounds = 0
+    for round_no in range(args.rounds):
+        rdir = root / f"round_{round_no}"
+        rdir.mkdir(parents=True, exist_ok=True)
+        visual = None
+        if args.visual_review:
+            visual = await review_assets(assets=assets, script=script, run_dir=rdir)
+            _write(rdir / "visual_review.json", json.dumps(visual, ensure_ascii=False, indent=2))
+        card = score_video_assets(assets, visual_review=visual)
+        _write(rdir / f"gate-video-{round_no}.json", card.model_dump_json(indent=2))
+        _write(rdir / "assets.json", assets.model_dump_json(indent=2))
+        scores.append(card.score)
+        decision = _decision_from_card(round_no=round_no, card=card, target_score=args.target_score, assets=assets)
+        _write(rdir / "decision.json", decision.model_dump_json(indent=2))
+        if card.passed and card.score >= args.target_score:
+            break
+
+        targets = plan_targets_from_decision(plan, decision)
+        if not targets:
+            break
+        prompt_patch = " ".join(a.prompt_patch or a.reason for a in decision.actions if a.type == "regenerate_segment")
+        candidate_plan = plan.model_copy(deep=True)
+        reset_plan_for_targets(candidate_plan, targets, round_no=round_no + 1, prompt_patch=prompt_patch)
+        _write(rdir / "candidate.plan.before.json", candidate_plan.model_dump_json(indent=2))
+        candidate_plan = await execute_render(candidate_plan, cap)
+        _write(rdir / "candidate.plan.json", candidate_plan.model_dump_json(indent=2))
+        candidate_assets = plan_to_assets(candidate_plan)
+        _write(rdir / "candidate.assets.json", candidate_assets.model_dump_json(indent=2))
+        candidate_visual = None
+        if args.visual_review:
+            candidate_visual = await review_assets(assets=candidate_assets, script=script, run_dir=rdir)
+            _write(rdir / "candidate.visual_review.json", json.dumps(candidate_visual, ensure_ascii=False, indent=2))
+        candidate_card = score_video_assets(candidate_assets, visual_review=candidate_visual)
+        _write(rdir / "candidate.gate-video.json", candidate_card.model_dump_json(indent=2))
+        comparison = compare_assets(
+            old_card=card,
+            new_card=candidate_card,
+            decision=decision,
+            old_assets=assets,
+            new_assets=candidate_assets,
+        )
+        _write(rdir / "comparison.json", comparison.model_dump_json(indent=2))
+        if comparison.winner == "new":
+            plan = candidate_plan
+            assets = candidate_assets
+            accepted_rounds += 1
+            _write(plan_path, plan.model_dump_json(indent=2))
+            _write(assets_path, assets.model_dump_json(indent=2))
+
+    summary = {"rounds": len(scores), "scores": scores, "accepted_rounds": accepted_rounds, "passed": any(s >= args.target_score for s in scores)}
+    _write(root / "summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0 if summary["passed"] else 1
+
+
+def _decision_from_card(*, round_no: int, card: Any, target_score: float, assets: RenderedAssets):
+    from videogeo.iteration import _decision_from_scorecard
+
+    return _decision_from_scorecard(round_no=round_no, card=card, target_score=target_score, assets=assets)
+
+
+def _cmd_visual_review(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    assets = RenderedAssets.model_validate_json(_read(args.assets or run_dir / "assets.json"))
+    script_path = Path(args.script or run_dir / "script.json")
+    script = VideoScript.model_validate_json(_read(script_path)) if script_path.exists() else None
+    review = asyncio.run(review_assets(assets=assets, script=script, run_dir=run_dir))
+    out = args.out or str(run_dir / "visual_review.json")
+    _write(out, json.dumps(review, ensure_ascii=False, indent=2))
+    print(json.dumps(review, ensure_ascii=False, indent=2))
+    return 0 if review.get("status") != "fallback_needs_review" else 1
 
 
 def _cmd_lessons(args: argparse.Namespace) -> int:
@@ -316,6 +411,7 @@ def main() -> None:
     s.add_argument("artifact")
     s.add_argument("--target", type=int, default=15)
     s.add_argument("--captions", default="")
+    s.add_argument("--visual-review", default="")
     s.add_argument("--out", default="")
     s.set_defaults(func=_cmd_score)
 
@@ -338,9 +434,20 @@ def main() -> None:
     it = sub.add_parser("iterate", help="create four-round iteration decisions")
     it.add_argument("run_dir")
     it.add_argument("--assets", default="")
+    it.add_argument("--plan", default="")
+    it.add_argument("--script", default="")
     it.add_argument("--rounds", type=int, default=4)
     it.add_argument("--target-score", type=float, default=0.86)
+    it.add_argument("--execute", action="store_true")
+    it.add_argument("--visual-review", action="store_true")
     it.set_defaults(func=_cmd_iterate)
+
+    vr = sub.add_parser("visual-review", help="run multimodal visual review for rendered assets")
+    vr.add_argument("run_dir")
+    vr.add_argument("--assets", default="")
+    vr.add_argument("--script", default="")
+    vr.add_argument("--out", default="")
+    vr.set_defaults(func=_cmd_visual_review)
 
     le = sub.add_parser("lessons", help="retrieve, append, or consolidate lessons")
     le.add_argument("action", choices=["retrieve", "append", "consolidate"])

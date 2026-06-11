@@ -76,26 +76,38 @@ def score_storyboard(data: dict[str, Any]) -> QualityScorecard:
     return QualityScorecard.from_dimensions(stage="storyboard", threshold=0.84, dimensions=dims)
 
 
-def score_video_assets(assets: RenderedAssets) -> QualityScorecard:
+def score_video_assets(assets: RenderedAssets, *, visual_review: dict[str, Any] | None = None) -> QualityScorecard:
     complete = assets.is_complete()
     total = sum(s.duration_sec for s in assets.shots)
     text = " ".join((s.narration_text + " " + s.bgm_direction + " " + s.clip_url) for s in assets.shots)
+    review_dims = visual_review.get("dimensions", {}) if isinstance(visual_review, dict) else {}
+    review_targets = visual_review.get("regenerate_targets", []) if isinstance(visual_review, dict) else []
+    targets = [str(t) for t in review_targets if isinstance(t, str)]
+    extend_scores = []
+    for shot in assets.shots:
+        if shot.shot_index == 0:
+            continue
+        score = 1.0 if shot.generation_mode == "extend" and shot.extend_seed_url else 0.45
+        if shot.generation_mode == "extend" and not shot.face_blurred_for_extend:
+            score = min(score, 0.75)
+        extend_scores.append(score)
     dims = [
         _dim("technical_validity", 0.08, 1.0 if complete else 0.2, "Missing clip URLs."),
-        _dim("product_recognizability", 0.14, _keyword_score(text, ["product", "MEIXU", "瓶", "产品", "hero"]), "Review sampled frames for product readability."),
-        _dim("motion_realism", 0.10, 0.75, "Requires visual review: check hands/liquid/camera physics."),
-        _dim("frame_aesthetics", 0.10, 0.75, "Requires visual review: check color/contrast/premium feel."),
-        _dim("continuity", 0.12, 0.8 if len(assets.shots) > 1 else 0.7, "Check segment handoff and character/prop consistency."),
-        _dim("prompt_adherence", 0.10, 0.75, "Requires frame sampling against script."),
+        _dim("product_recognizability", 0.14, _review_score(review_dims, "product_recognizability", _keyword_score(text, ["product", "MEIXU", "瓶", "产品", "hero"])), "Review sampled frames for product readability."),
+        _dim("motion_realism", 0.10, _review_score(review_dims, "motion_realism", 0.75), "Requires visual review: check hands/liquid/camera physics."),
+        _dim("frame_aesthetics", 0.10, _review_score(review_dims, "frame_aesthetics", 0.75), "Requires visual review: check color/contrast/premium feel."),
+        _dim("continuity", 0.10, _review_score(review_dims, "continuity", 0.8 if len(assets.shots) > 1 else 0.7), "Check segment handoff and character/prop consistency."),
+        _dim("extend_chain", 0.08, _avg(extend_scores) if extend_scores else 0.9, "Use EXTEND seed chain for segment continuity and BGM linkage."),
+        _dim("prompt_adherence", 0.09, _review_score(review_dims, "prompt_adherence", 0.75), "Requires frame sampling against script."),
         _dim("audio_quality", 0.08, 0.9 if any(s.native_audio or s.narration_audio_url for s in assets.shots) else 0.55, "Check audio stream, silence, clipping."),
-        _dim("audio_visual_sync", 0.08, 0.75, "Review voice moments against visuals."),
-        _dim("ad_effectiveness", 0.08, _keyword_score(text, ["MEIXU", "brand", "product", "每序", "产品"]), "Brand and product should be memorable."),
+        _dim("audio_visual_sync", 0.08, _review_score(review_dims, "audio_visual_sync", 0.75), "Review voice moments against visuals."),
+        _dim("ad_effectiveness", 0.08, _review_score(review_dims, "ad_effectiveness", _keyword_score(text, ["MEIXU", "brand", "product", "每序", "产品"])), "Brand and product should be memorable."),
         _dim("safety_compliance", 0.06, _risk_score(text), "Remove unsafe claims or visuals."),
-        _dim("caption_readiness", 0.06, 0.75, "Check safe zones on sampled frames."),
+        _dim("caption_readiness", 0.06, _review_score(review_dims, "caption_readiness", 0.75), "Check safe zones on sampled frames."),
     ]
     if total <= 0:
         dims[0].severity = "blocker"
-    return QualityScorecard.from_dimensions(stage="video", threshold=0.86, dimensions=dims)
+    return QualityScorecard.from_dimensions(stage="video", threshold=0.86, dimensions=dims, regenerate_targets=targets)
 
 
 def score_captions(plan: CaptionPlan) -> QualityScorecard:
@@ -158,6 +170,15 @@ def _keyword_score(text: str, keywords: list[str]) -> float:
     low = (text or "").lower()
     hits = sum(1 for k in keywords if k.lower() in low)
     return min(1.0, hits / max(1, min(len(keywords), 4)))
+
+
+def _review_score(review_dims: Any, key: str, default: float) -> float:
+    if isinstance(review_dims, dict):
+        try:
+            return float(review_dims.get(key, default))
+        except (TypeError, ValueError):
+            return default
+    return default
 
 
 def _claims_are_tempered(text: str) -> float:

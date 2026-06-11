@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-StepType = Literal["image", "video", "tts", "music", "concat"]
+StepType = Literal["image", "prepare_extend", "video", "tts", "music", "concat"]
 StepStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
 

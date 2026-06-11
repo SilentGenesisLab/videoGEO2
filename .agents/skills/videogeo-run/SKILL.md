@@ -13,7 +13,7 @@ rules are in the repository root `AGENTS.md`.
 1. Create `runs/<run_id>/`.
 2. Write `requirement.json`.
 3. Follow `AGENTS.md` exactly:
-   `lessons -> director -> gate -> script-orchestrator -> gate -> storyboard -> gate -> compile -> concurrent render -> gate -> iterate -> editor -> gate -> assemble -> captions -> HyperFrames -> delivery gate -> audit -> lessons`.
+   `lessons -> director -> gate -> script-orchestrator -> gate -> storyboard -> gate -> compile -> EXTEND-chain render -> visual-review gate -> executable iterate -> editor -> gate -> assemble -> captions -> HyperFrames -> delivery gate -> audit -> lessons`.
 4. For 25s product/TVC jobs, verify `script.json` contains:
    - `global_narrative`
    - storyboard `shots`
@@ -26,10 +26,15 @@ rules are in the repository root `AGENTS.md`.
 6. If subtitles are requested or useful, generate clean video first, then use
    `python -m videogeo captions` and `python -m videogeo hyperframes`; never ask
    the generative video model to burn subtitles.
-7. Run `python -m videogeo iterate runs/<id> --rounds 4` after first assets.
-8. End every real run with `python -m videogeo audit runs/<id>`.
-9. Show the user the compiled `plan.json` outline before long real rendering.
-10. Report final video URL, captioned video status, run directory, gate retries,
+7. For multi-segment TVC, keep `VIDEOGEO_USE_EXTEND=true`: generate segment 0,
+   prepare a 14.8s face-blurred EXTEND seed from it, then generate the next
+   segment with the processed previous video in `video_urls`.
+8. Run `python -m videogeo visual-review runs/<id>` after first assets.
+9. Run `python -m videogeo iterate runs/<id> --execute --visual-review --rounds 4`
+   after the visual gate; do not count decision-only rounds as iteration.
+10. End every real run with `python -m videogeo audit runs/<id>`.
+11. Show the user the compiled `plan.json` outline before long real rendering.
+12. Report final video URL, captioned video status, run directory, gate retries,
     iteration summary, audit risks, and failed steps if any.
 
 PowerShell defaults:
@@ -38,6 +43,7 @@ PowerShell defaults:
 $env:PYTHONIOENCODING="utf-8"
 $env:VIDEOGEO_USE_MOCKS="true"
 $env:VIDEOGEO_AUDIO_MODE="seedance_native"
+$env:VIDEOGEO_USE_EXTEND="true"
 ```
 
 For real media, set `VIDEOGEO_USE_MOCKS=false` and confirm `.env` is configured.

@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     render_concurrency: int = 4
     video_concurrency: int = 2
     audio_mode: str = "seedance_native"
+    use_extend: bool = True
+    extend_seed_max_duration_sec: float = 14.8
+    extend_seed_head_cut_sec: float = 1.0
+    blur_faces_before_extend: bool = True
+    extend_face_blur_conf: float = 0.1
+    extend_face_blur_kernel: int = 60
 
     ai_service_base_url: str = "http://localhost:8544"
     internal_api_key: str = ""

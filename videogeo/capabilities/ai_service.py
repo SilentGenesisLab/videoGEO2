@@ -109,14 +109,115 @@ class AiServiceCapabilities:
             raise RuntimeError(f"/v1/video/batch returned no job_ids: {data}")
         return await self._poll_video_job(str(job_ids[0]))
 
+    async def prepare_extend_seed(
+        self,
+        *,
+        video_url: str,
+        target_duration_sec: float,
+        head_cut_sec: float,
+        blur_faces: bool,
+        blur_conf: float,
+        blur_kernel: int,
+    ) -> dict[str, str | float | bool]:
+        if not video_url:
+            raise ValueError("prepare_extend_seed requires video_url")
+        if not self._repo.exists():
+            raise RuntimeError("prepare_extend_seed requires local chorify-ai-service repo")
+        if not self._python.exists():
+            raise FileNotFoundError(f"ai-service python not found: {self._python}")
+        payload = {
+            "video_url": video_url,
+            "target_duration_sec": target_duration_sec,
+            "head_cut_sec": head_cut_sec,
+            "blur_faces": blur_faces,
+            "blur_conf": blur_conf,
+            "blur_kernel": blur_kernel,
+        }
+        code = r'''
+import asyncio
+import json
+import os
+import sys
+from dotenv import load_dotenv
+
+load_dotenv(".env")
+os.environ["HTTP_PROXY"] = ""
+os.environ["HTTPS_PROXY"] = ""
+os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+
+from app.services import face_blur_service
+from app.services import ffmpeg_service
+
+async def main():
+    req = json.loads(sys.stdin.read())
+    trimmed = await ffmpeg_service.trim_for_extend(
+        req["video_url"],
+        head_cut=float(req["head_cut_sec"]),
+        max_duration=float(req["target_duration_sec"]),
+    )
+    scaled_url = str(trimmed["oss_url"])
+    seed_url = scaled_url
+    blurred_url = ""
+    face_blurred = False
+    if req.get("blur_faces"):
+        try:
+            blurred_url = await face_blur_service.blur_video_faces(
+                scaled_url,
+                conf=float(req["blur_conf"]),
+                blur_kernel=int(req["blur_kernel"]),
+            )
+            seed_url = blurred_url
+            face_blurred = True
+        except Exception as exc:
+            print("VIDEOGEO_FACE_BLUR_WARNING=" + f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    print("VIDEOGEO_RESULT_JSON=" + json.dumps({
+        "seed_video_url": seed_url,
+        "scaled_video_url": scaled_url,
+        "blurred_video_url": blurred_url,
+        "duration_sec": float(trimmed.get("output_duration_seconds") or req["target_duration_sec"]),
+        "face_blurred": face_blurred,
+    }, ensure_ascii=False))
+
+asyncio.run(main())
+'''
+        return await self._run_local_json(code, payload, timeout=max(self._timeout, 600.0))
+
+    async def extend_video(
+        self,
+        *,
+        prompt: str,
+        image_url: str,
+        video_url: str,
+        duration_sec: float,
+        aspect_ratio: str,
+    ) -> str:
+        if not video_url:
+            raise ValueError("extend_video requires video_url")
+        if self._repo.exists():
+            return await self._generate_video_local(
+                prompt=prompt,
+                image_url=image_url,
+                video_url=video_url,
+                duration_sec=duration_sec,
+                aspect_ratio=aspect_ratio,
+            )
+        raise RuntimeError("EXTEND mode requires local chorify-ai-service repo")
+
     async def _generate_video_local(
-        self, *, prompt: str, image_url: str, duration_sec: float, aspect_ratio: str
+        self,
+        *,
+        prompt: str,
+        image_url: str,
+        duration_sec: float,
+        aspect_ratio: str,
+        video_url: str = "",
     ) -> str:
         if not self._python.exists():
             raise FileNotFoundError(f"ai-service python not found: {self._python}")
         payload = {
             "prompt": prompt,
             "image_url": image_url,
+            "video_url": video_url,
             "duration_sec": self._seedance_duration(duration_sec),
             "aspect_ratio": aspect_ratio,
         }
@@ -138,9 +239,10 @@ async def main():
     req = json.loads(sys.stdin.read())
     result = await run_full(
         prompt=req["prompt"],
-        image_urls=[req["image_url"]],
+        image_urls=[req["image_url"]] if req.get("image_url") else [],
         duration=int(req["duration_sec"]),
         ratio=req["aspect_ratio"],
+        video_urls=[req["video_url"]] if req.get("video_url") else None,
     )
     print("VIDEOGEO_RESULT_JSON=" + json.dumps({
         "oss_url": result.oss_url,
@@ -186,6 +288,43 @@ asyncio.run(main())
                     raise RuntimeError(f"local Seedance returned no oss_url: {data}")
                 return str(url)
         raise RuntimeError(f"local Seedance returned no result marker. stdout={out[-2000:]} stderr={err[-2000:]}")
+
+    async def _run_local_json(self, code: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["HTTP_PROXY"] = ""
+        env["HTTPS_PROXY"] = ""
+        env["NO_PROXY"] = "localhost,127.0.0.1"
+        proc = await asyncio.create_subprocess_exec(
+            str(self._python),
+            "-c",
+            code,
+            cwd=str(self._repo),
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise TimeoutError(f"local ai-service helper timed out after {timeout:g}s")
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            raise RuntimeError(f"local ai-service helper failed rc={proc.returncode}: {err[-2000:] or out[-2000:]}")
+        for line in reversed(out.splitlines()):
+            if line.startswith("VIDEOGEO_RESULT_JSON="):
+                data = json.loads(line.split("=", 1)[1])
+                if not isinstance(data, dict):
+                    raise RuntimeError(f"local helper returned non-object JSON: {data}")
+                return data
+        raise RuntimeError(f"local helper returned no result marker. stdout={out[-2000:]} stderr={err[-2000:]}")
 
     async def _poll_video_job(self, job_id: str) -> str:
         deadline = time.monotonic() + self._video_timeout

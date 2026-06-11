@@ -4,7 +4,8 @@ Codex-native multi-agent video generation framework.
 
 Codex is the brain. Python is the thin executor. The pipeline turns a user
 video request into structured artifacts, gates every semantic stage, compiles a
-deterministic `plan.json`, renders Seedance segments concurrently, and assembles
+deterministic `plan.json`, renders Seedance segments as an EXTEND chain when
+continuity matters, and assembles
 the final video.
 
 The upgraded kernel also supports weighted professional scorecards, four-round
@@ -17,7 +18,7 @@ The main product/TVC flow is:
 
 ```text
 requirement -> brief -> global script -> storyboard shots -> render segments
-  -> plan -> concurrent render -> assets -> final timeline -> assemble
+  -> plan -> EXTEND-chain render -> visual-review -> executable iteration -> assets -> final timeline -> assemble
 ```
 
 For a 25s TVC, `script.json` should contain storyboard micro-shots but only two
@@ -49,8 +50,9 @@ Professional gates and iteration:
 
 ```bash
 python -m videogeo score script runs/<id>/script.json --target 25 --out runs/<id>/gate-script-score-0.json
-python -m videogeo score assets runs/<id>/assets.json --out runs/<id>/gate-video-score-0.json
-python -m videogeo iterate runs/<id> --rounds 4 --target-score 0.86
+python -m videogeo visual-review runs/<id> --out runs/<id>/visual_review.json
+python -m videogeo score assets runs/<id>/assets.json --visual-review runs/<id>/visual_review.json --out runs/<id>/gate-video-score-0.json
+python -m videogeo iterate runs/<id> --execute --visual-review --rounds 4 --target-score 0.86
 ```
 
 Subtitle post-production:
@@ -79,7 +81,7 @@ videogeo/
   schemas/                    Requirement -> Brief -> Script -> Plan -> Assets -> Final + gates/captions/audit
   capabilities/               mock + chorify-ai-service adapter
   compile.py                  VideoScript -> plan.json
-  executor.py                 concurrent render, resumable plan status
+  executor.py                 EXTEND-chain render, resumable plan status
   gates/                      deterministic rules + semantic rubrics
   __main__.py                 CLI
 runs/<run_id>/                generated artifacts, ignored by git
